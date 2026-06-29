@@ -1,0 +1,7 @@
+# ninja log v7
+80	14439	1782721612000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda_kernel.o	55cd000000375902
+56	15103	1782721612000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda.o	1ca9c85d86ccd6fd
+5	8100	1782723618000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda_kernel.o	fd3ec6e5e754d7ea
+3	12702	1782723618000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda.o	2ac8d69d0c71cf4d
+4	8159	1782723631000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda_kernel.o	d79c4105d37d2f4
+3	12782	1782723631000000000	/projappl/project_2019597/master-thesis/RoomFormer/diff_ras/build/temp.linux-x86_64-cpython-38/rasterize_cuda.o	de197e9459888c82

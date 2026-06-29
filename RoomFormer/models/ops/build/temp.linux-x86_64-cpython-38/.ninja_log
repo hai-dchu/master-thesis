@@ -1,0 +1,13 @@
+# ninja log v7
+2	24448	1782716481000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cpu/ms_deform_attn_cpu.o	b2bad2302b41d846
+3	42360	1782716481000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cuda/ms_deform_attn_cuda.o	f939b97e96a48867
+694	49697	1782716483000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/vision.o	a3bfce85e9f6651e
+99	41009	1782721396000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cpu/ms_deform_attn_cpu.o	1012ade1ac1f99d4
+120	44662	1782721396000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cuda/ms_deform_attn_cuda.o	ff631934f31d0f06
+150	46247	1782721396000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/vision.o	ca0ee5fe4da1aaf3
+240	4904	1782722857000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cpu/ms_deform_attn_cpu.o	e05b6c309f6c85a6
+243	11048	1782722857000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cuda/ms_deform_attn_cuda.o	901b3c69f41b4624
+256	15820	1782722857000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/vision.o	f55200055e131a5a
+8	4773	1782723530000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cpu/ms_deform_attn_cpu.o	79b6ccc7c3525c37
+10	12086	1782723530000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/cuda/ms_deform_attn_cuda.o	6ebbb1a3543a34a6
+15	14899	1782723530000000000	/projappl/project_2019597/master-thesis/RoomFormer/models/ops/build/temp.linux-x86_64-cpython-38/projappl/project_2019597/master-thesis/RoomFormer/models/ops/src/vision.o	c08a8519dc46c30f
