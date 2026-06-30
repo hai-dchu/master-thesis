@@ -1,0 +1,26 @@
+ftfy
+omegaconf
+regex
+scikit-learn
+submitit
+termcolor
+# torch
+# torchmetrics
+torchvision
+
+# RoomFormer requirements
+opencv-python
+numpy
+matplotlib
+imageio
+wandb
+scipy
+fvcore
+cloudpickle
+omegaconf
+fairscale
+timm
+shapely
+tqdm
+pycocotools
+descartes
