@@ -17,12 +17,15 @@ echo "Install extra dependencies"
 conda-containerize update ./environments/ --post-install update.sh
 
 echo "Compile and test repo-related libs"
+
+# Deformable-attention modules [deformable-DETR](https://github.com/fundamentalvision/Deformable-DETR)
 cd RoomFormer/models/ops
 sh make_alt.sh
 
 # unit test for deformable-attention modules (should see all checking is True)
 python test.py
 
+# Differentiable rasterization module [BoundaryFormer](https://github.com/mlpc-ucsd/BoundaryFormer)
 cd ../../diff_ras
 pip install -e . --no-build-isolation
 # python setup.py build develop --user

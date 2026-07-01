@@ -5,3 +5,7 @@ preparation/*
 *environments/*
 
 *.tar
+
+# RoomFormer
+RoomFormer/output/*
+RoomFormer/wandb*
