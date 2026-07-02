@@ -1,2 +1,2 @@
-pip install --user ninja
-pip install --user --no-build-isolation .
+pip install ninja
+pip install -v --no-build-isolation -e .
