@@ -11,7 +11,7 @@ from util.misc import NestedTensor, nested_tensor_from_tensor_list, interpolate,
 from .backbone import build_backbone
 from .matcher import build_matcher
 from .losses import custom_L1_loss, MaskRasterizationLoss
-from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer import build_deformable_transformer
 import copy
 
 
@@ -361,7 +361,7 @@ def build(args, train=True):
     num_classes = 1 # valid or invalid corner
 
     backbone = build_backbone(args)
-    transformer = build_deforamble_transformer(args)
+    transformer = build_deformable_transformer(args)
     model = RoomFormer(
         backbone,
         transformer,
