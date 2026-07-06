@@ -7,5 +7,6 @@ python main_v1.py --dataset_name=stru3d \
                --semantic_classes=-1 \
                --job_name=train_stru3d \
                --epochs=3 \
-               --dinov3_repo='/home/hai/master-thesis/RoomFormer/dinov3' \
-               --dinov3_checkpoint='/home/hai/master-thesis/RoomFormer/checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth'
+               --dinov3_repo='dinov3' \
+               --dinov3_checkpoint='checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth' \
+	       --wandb

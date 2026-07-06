@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=RoomFormer-Vanilla
-#SBATCH --account=bghach@roihu-gpu.csc.fi
+#SBATCH --account=project_2019597
 #SBATCH --partition=gpumedium
 #SBATCH --time=10:00:00
 #SBATCH --nodes=1
@@ -28,11 +28,13 @@ export PYTHONUSERBASE="/projappl/project_2019597/master-thesis/environments/"
 
 # Run after running tykky
 cd RoomFormer
-srun python main.py --dataset_name=stru3d \ 
-                    --dataset_root=data/stru3d \
-                    --num_queries=800 \
-                    --num_polys=20 \
-                    --semantic_classes=-1 \
-                    --job_name=train_stru3d \
-                    --resume output/2026-07-01-10-27-13_train_stru3d/checkpoint.pth
-
+python main_v1.py --dataset_name=stru3d \
+               --dataset_root=data/stru3d \
+               --num_queries=800 \
+               --num_polys=20 \
+               --semantic_classes=-1 \
+               --job_name=train_stru3d \
+               --epochs=3 \
+               --dinov3_repo='dinov3' \
+               --dinov3_checkpoint='checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth' \
+               --wandb

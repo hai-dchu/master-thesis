@@ -1,6 +1,6 @@
 echo "Load module"
-module load tykky git
-module load gcc/13.2.0 cuda/12.6.0
+module load tykky # git
+module load gcc/15.2.0 cuda/13.0.2
 
 echo "Creating environment"
 rm -rf environments

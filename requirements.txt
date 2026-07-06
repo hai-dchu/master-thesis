@@ -5,8 +5,8 @@ scikit-learn
 submitit
 termcolor
 # torch
-# torchmetrics
-torchvision
+torchmetrics
+#torchvision
 
 # RoomFormer requirements
 opencv-python
