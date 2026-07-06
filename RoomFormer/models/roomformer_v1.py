@@ -376,7 +376,7 @@ class DinoImageFeature(nn.Module):
         super().__init__()
         self.backbone = backbone
         self.img_size = img_size
-        self.linear = nn.Linear(in_features=384, out_features=256*256)
+        self.linear = nn.Linear(in_features=384, out_features=256)
         self.transform = make_transform()
 
     def freeze(self):
@@ -401,10 +401,10 @@ class DinoImageFeature(nn.Module):
         x_transform = self.transform(x_raw)
         B, _, _, _ = x_transform.shape
 
-        dino_features = self.backbone(x_transform)
-        out = self.linear(dino_features)
+        dino_features = self.backbone.forward_features(x_transform)['x_norm_patchtokens']
+        out = self.linear(dino_features).reshape((B, 1, self.img_size, self.img_size))
         
-        return out.reshape((B, 1, self.img_size, self.img_size))
+        return out
 
 
 class EnhancedRoomFormer(RoomFormer):
