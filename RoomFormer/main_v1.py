@@ -180,7 +180,8 @@ def main(args):
         return out
 
     for n, p in model.named_parameters():
-        print(n)
+        param_state = "[Active]" if p.requires_grad else ""
+        print(f"{param_state} {n}")
 
     param_dicts = [
         {
@@ -199,7 +200,7 @@ def main(args):
         },
         {
             "params": [p for n, p in model.named_parameters() if match_name_keywords(n, ["dinov3_feature_extractor"]) and p.requires_grad],
-            "lr": args.lr_backbone,
+            "lr": args.lr,
         }
     ]
     if args.sgd:
