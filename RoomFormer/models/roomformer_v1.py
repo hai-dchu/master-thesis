@@ -376,7 +376,7 @@ class DinoImageFeature(nn.Module):
         super().__init__()
         self.backbone = backbone
         self.img_size = img_size
-        self.linear = nn.Linear(in_features=384, out_features=256)
+        self.conv = nn.Conv2d(in_channels=384, out_channels=256, kernel_size=1) #, padding=1)
         self.transform = make_transform()
 
     def freeze(self):
@@ -399,11 +399,15 @@ class DinoImageFeature(nn.Module):
         else:
             x_raw = x
         x_transform = self.transform(x_raw)
-        B, _, _, _ = x_transform.shape
-
         dino_features = self.backbone.forward_features(x_transform)['x_norm_patchtokens']
-        out = self.linear(dino_features).reshape((B, 1, self.img_size, self.img_size))
-        
+        # change to BxCxHW
+        dino_features = torch.movedim(dino_features, -1, 1)
+        B, C, HW = dino_features.shape
+        dino_features = dino_features.reshape((B, C, 16, 16))
+        # print(dino_features.shape)
+        out = self.conv(dino_features) #.reshape((B, 1, self.img_size, self.img_size))
+        out = out.reshape((B, 1, self.img_size, self.img_size))
+        # print(out.shape)
         return out
 
 
