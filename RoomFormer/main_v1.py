@@ -186,7 +186,7 @@ def main(args):
         {
             "params":
                 [p for n, p in model.named_parameters()
-                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad],
+                 if not match_name_keywords(n, args.lr_backbone_names) and not match_name_keywords(n, args.lr_linear_proj_names) and not match_name_keywords(n, ["dinov3_feature_extractor"]) and p.requires_grad],
             "lr": args.lr,
         },
         {
