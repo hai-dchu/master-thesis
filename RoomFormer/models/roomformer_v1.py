@@ -17,41 +17,8 @@ from .deformable_transformer import build_deformable_transformer
 import copy
 
 
-def make_transform(resize_size: int = 256):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
-
-
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
-
-
-class DinoImageFeature(nn.Module):
-    def __init__(self, backbone, img_size=256):
-        super().__init__()
-        self.backbone = backbone
-        self.img_size = img_size
-        self.linear = nn.Linear(in_features=384, out_features=256*256)
-        self.transform = make_transform()
-
-    def forward(self, x):
-        if hasattr(x, 'tensors'):
-            x_raw = x.tensors
-        else:
-            x_raw = x
-        x_transform = self.transform(x_raw)
-        B, _, _, _ = x_transform.shape
-
-        dino_features = self.backbone(x_transform)
-        out = self.linear(dino_features)
-        
-        return out.reshape((B, 1, self.img_size, self.img_size))
 
 
 class RoomFormer(nn.Module):
@@ -377,6 +344,55 @@ class SetCriterion(nn.Module):
 
         return losses
 
+
+def make_transform(resize_size: int = 256):
+    to_tensor = v2.ToImage()
+    resize = v2.Resize((resize_size, resize_size), antialias=True)
+    to_float = v2.ToDtype(torch.float32, scale=True)
+    normalize = v2.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    )
+    return v2.Compose([to_tensor, resize, to_float, normalize])
+
+
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
+
+
+class DinoImageFeature(nn.Module):
+    def __init__(self, backbone, img_size=256):
+        super().__init__()
+        self.backbone = backbone
+        self.img_size = img_size
+        self.linear = nn.Linear(in_features=384, out_features=256*256)
+        self.transform = make_transform()
+
+    def forward(self, x):
+        if hasattr(x, 'tensors'):
+            x_raw = x.tensors
+        else:
+            x_raw = x
+        x_transform = self.transform(x_raw)
+        B, _, _, _ = x_transform.shape
+
+        dino_features = self.backbone(x_transform)
+        out = self.linear(dino_features)
+        
+        return out.reshape((B, 1, self.img_size, self.img_size))
+
+
 class EnhancedRoomFormer(RoomFormer):
     def __init__(self, dinov3_feature_extractor, backbone, transformer, num_classes, num_queries, num_polys, num_feature_levels,
                  aux_loss=True, with_poly_refine=False, masked_attn=False, semantic_classes=-1):
@@ -392,20 +408,6 @@ class EnhancedRoomFormer(RoomFormer):
         enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
         mask = torch.ones((B, H, W), dtype=torch.bool, device=device)
         return super().forward(NestedTensor(enhanced_samples, mask))
-
-class MLP(nn.Module):
-    """ Very simple multi-layer perceptron (also called FFN)"""
-
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-        super().__init__()
-        self.num_layers = num_layers
-        h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
-        return x
 
 
 def build(args, train=True):
