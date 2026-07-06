@@ -200,7 +200,7 @@ def main(args):
         },
         {
             "params": [p for n, p in model.named_parameters() if match_name_keywords(n, ["dinov3_feature_extractor"]) and p.requires_grad],
-            "lr": args.lr,
+            "lr": args.lr_backbone,
         }
     ]
     if args.sgd:
