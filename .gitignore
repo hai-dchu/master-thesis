@@ -7,6 +7,5 @@ preparation/*
 *.tar
 
 # RoomFormer
-RoomFormer/output/*
-RoomFormer/output-v1/*
+RoomFormer/output*
 RoomFormer/wandb*
