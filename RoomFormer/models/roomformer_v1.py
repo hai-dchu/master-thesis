@@ -379,6 +379,20 @@ class DinoImageFeature(nn.Module):
         self.linear = nn.Linear(in_features=384, out_features=256*256)
         self.transform = make_transform()
 
+    def freeze(self):
+        """
+        Freeze backbone (dinov3-vit)
+        """
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def unfreeze(self):
+        """
+        Unfreeze backbone (dinov3-vit)
+        """
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+
     def forward(self, x):
         if hasattr(x, 'tensors'):
             x_raw = x.tensors
@@ -399,6 +413,9 @@ class EnhancedRoomFormer(RoomFormer):
         super().__init__(backbone, transformer, num_classes, num_queries, num_polys, num_feature_levels,
                  aux_loss=True, with_poly_refine=False, masked_attn=False, semantic_classes=-1)
         self.dinov3_feature_extractor = dinov3_feature_extractor
+        
+        # Freeze dinov3 backbone
+        self.dinov3_feature_extractor.freeze()
 
     def forward(self, samples):
         samples_tensor = nested_tensor_from_tensor_list(samples).tensors
