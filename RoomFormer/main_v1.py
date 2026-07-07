@@ -12,7 +12,7 @@ import util.misc as utils
 import wandb
 from datasets import build_dataset
 from engine import evaluate, train_one_epoch
-from models import build_model
+from models import build_model_v1
 from torch.utils.data import DataLoader
 
 
@@ -241,7 +241,7 @@ def main(args):
     random.seed(seed)
 
     # build model
-    model, criterion = build_model(args)
+    model, criterion = build_model_v1(args)
     model.to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

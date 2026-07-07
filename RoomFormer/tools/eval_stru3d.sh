@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+echo "
+Evalulating provided vanilla RoomFormer (v0)
+"
+
 python eval.py --dataset_name=stru3d \
                --dataset_root=data/stru3d \
                --eval_set=test \

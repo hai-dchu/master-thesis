@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
 echo "
-Evalulating retrained vanilla RoomFormer (v0)
+Evalulating modified RoomFormer (v1)
+In this version, dinov3 feature map are stacked
+on top of the 2D projection map before passing
+to the rest of RoomFormer. 
 "
 
 python eval.py --dataset_name=stru3d \
