@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 import util.misc as utils
 from datasets import build_dataset
 from engine import evaluate, train_one_epoch
-from models import build_model_v0
+from models import build_model_v0 as build_model
 
 
 
@@ -132,7 +132,7 @@ def main(args):
     random.seed(seed)
 
     # build model
-    model, criterion = build_model_v0(args)
+    model, criterion = build_model(args)
     model.to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

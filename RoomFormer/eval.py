@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 import util.misc as utils
 from datasets import build_dataset
 from engine import evaluate_floor
-from models import build_model
+from models import build_model_v0 as build_model
 
 
 def get_args_parser():
