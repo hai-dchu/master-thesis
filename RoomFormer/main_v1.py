@@ -116,6 +116,7 @@ def get_args_parser():
     # dinov3
     parser.add_argument('--dinov3_repo', help='root directory of dinov3')
     parser.add_argument('--dinov3_checkpoint', help='checkpoint directory of dinov3')
+    parser.add_argument('--dinov3_n_last_layers', default=1, help='number of last layers to be extracted from dinov3 backbone')
 
     return parser
 
