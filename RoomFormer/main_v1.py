@@ -209,6 +209,7 @@ def get_args_parser():
         default=1,
         help="number of last layers to be extracted from dinov3 backbone",
     )
+    parser.add_argument("--lr_dinov3_head", help="learning rate for dinov3 head to feature map", default=1e-4)
 
     return parser
 
@@ -321,7 +322,7 @@ def main(args):
                 if match_name_keywords(n, ["dinov3_feature_extractor"])
                 and p.requires_grad
             ],
-            "lr": 1e-4,
+            "lr": args.lr_dinov3_head,
         },
     ]
     if args.sgd:
