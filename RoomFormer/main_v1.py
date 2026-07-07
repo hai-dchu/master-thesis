@@ -208,8 +208,14 @@ def get_args_parser():
         "--dinov3_n_last_layers",
         default=1,
         help="number of last layers to be extracted from dinov3 backbone",
+        type=int,
     )
-    parser.add_argument("--lr_dinov3_head", help="learning rate for dinov3 head to feature map", default=1e-3, type=float)
+    parser.add_argument(
+        "--lr_dinov3_head",
+        help="learning rate for dinov3 head to feature map",
+        default=1e-3,
+        type=float,
+    )
 
     return parser
 
