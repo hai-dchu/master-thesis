@@ -477,8 +477,14 @@ class DinoImageFeature(nn.Module):
         dino_features = self.backbone.get_intermediate_layers(
             x_transform, n=self.n_last_layers, reshape=True
         )  # BxCxHxW
-        out = self.head.predict(dino_features, rescale_to=self.img_size)
-        # print(out.shape)
+        out = self.head(dino_features)
+
+        out = torch.nn.functional.interpolate(
+                input=out,
+                size=self.img_size,
+                mode="bilinear",
+                align_corners=False,
+        )
         return out
 
 
@@ -517,7 +523,7 @@ class EnhancedRoomFormer(RoomFormer):
         device = samples[0].device
         dino_features = self.dinov3_feature_extractor(samples_tensor)
         enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
-        mask = torch.ones((B, H, W), dtype=torch.bool, device=device)
+        mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
         return super().forward(NestedTensor(enhanced_samples, mask))
 
 
@@ -571,6 +577,8 @@ def build(args, train=True):
 
     if not train:
         return model
+    
+    linear_head.train()
 
     device = torch.device(args.device)
     matcher = build_matcher(args)
