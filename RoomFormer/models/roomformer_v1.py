@@ -541,8 +541,8 @@ def build(args, train=True):
         args.device
     )
     dinov3_feature_extractor = DinoImageFeature(
-        dinov3,
-        linear_head,
+        backbone=dinov3,
+        head=linear_head,
         n_last_layers=args.dinov3_n_last_layers,
         img_size=(256, 256),
     )
