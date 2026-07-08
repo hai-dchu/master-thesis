@@ -487,11 +487,23 @@ class DinoImageFeature(nn.Module):
         )
         return out
 
+    def predict(self, x):
+        if hasattr(x, "tensors"):
+            x_raw = x.tensors
+        else:
+            x_raw = x
+        x_transform = self.transform(x_raw)
+        dino_features = self.backbone.get_intermediate_layers(
+            x_transform, n=self.n_last_layers, reshape=True
+        )  # BxCxHxW
+        out = self.head.predict(dino_features)
+        return out
+
 
 class EnhancedRoomFormer(RoomFormer):
     def __init__(
         self,
-        dinov3_feature_extractor,
+        dinov3_feature_extractor: DinoImageFeature,
         backbone,
         transformer,
         num_classes,
@@ -522,6 +534,15 @@ class EnhancedRoomFormer(RoomFormer):
         B, C, H, W = samples_tensor.shape
         device = samples[0].device
         dino_features = self.dinov3_feature_extractor(samples_tensor)
+        enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
+        mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
+        return super().forward(NestedTensor(enhanced_samples, mask))
+
+    def predict(self, samples):
+        samples_tensor = nested_tensor_from_tensor_list(samples).tensors
+        B, C, H, W = samples_tensor.shape
+        device = samples[0].device
+        dino_features = self.dinov3_feature_extractor.predict(samples_tensor)
         enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
         mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
         return super().forward(NestedTensor(enhanced_samples, mask))
