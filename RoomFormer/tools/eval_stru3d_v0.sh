@@ -4,10 +4,12 @@ echo "
 Evalulating retrained vanilla RoomFormer (v0)
 "
 
+CHECKPOINT=$1
+
 python eval.py --dataset_name=stru3d \
                --dataset_root=data/stru3d \
                --eval_set=test \
-               --checkpoint=output-v0/2026-07-01-10-27-13_train_stru3d/checkpoint.pth \
+               --checkpoint=$CHECKPOINT \
                --output_dir=eval_stru3d-retrain-vanilla \
                --num_queries=800 \
                --num_polys=20 \

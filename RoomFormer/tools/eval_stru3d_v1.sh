@@ -7,10 +7,12 @@ on top of the 2D projection map before passing
 to the rest of RoomFormer. 
 "
 
+CHECKPOINT=$1
+
 python eval_v1.py --dataset_name=stru3d \
                --dataset_root=data/stru3d \
                --eval_set=test \
-               --checkpoint=output-v1/2026-07-07-12-43-10_train_stru3d/checkpoint.pth \
+               --checkpoint=$CHECKPOINT \
                --output_dir=eval_stru3d-dino-v1 \
                --num_queries=800 \
                --num_polys=20 \
