@@ -32,4 +32,4 @@ python main.py --dataset_name=stru3d \
                --num_polys=20 \
                --semantic_classes=-1 \
                --job_name=train_stru3d \
-               --output_dir=output-v0
+               --output_dir=/scratch/project_2019597/master-thesis/output-v0
