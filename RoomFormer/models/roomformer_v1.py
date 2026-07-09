@@ -480,10 +480,10 @@ class DinoImageFeature(nn.Module):
         out = self.head(dino_features)
 
         out = torch.nn.functional.interpolate(
-                input=out,
-                size=self.img_size,
-                mode="bilinear",
-                align_corners=False,
+            input=out,
+            size=self.img_size,
+            mode="bilinear",
+            align_corners=False,
         )
         return out
 
@@ -530,21 +530,26 @@ class EnhancedRoomFormer(RoomFormer):
         self.dinov3_feature_extractor = dinov3_feature_extractor
 
     def forward(self, samples):
-        samples_tensor = nested_tensor_from_tensor_list(samples).tensors
-        B, C, H, W = samples_tensor.shape
-        device = samples[0].device
+        nested_tensor = nested_tensor_from_tensor_list(samples)
+        samples_tensor = nested_tensor.tensors
+        mask = nested_tensor.mask
+
+        # B, C, H, W = samples_tensor.shape
+        # device = samples[0].device
         dino_features = self.dinov3_feature_extractor(samples_tensor)
         enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
-        mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
+        # mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
         return super().forward(NestedTensor(enhanced_samples, mask))
 
     def predict(self, samples):
-        samples_tensor = nested_tensor_from_tensor_list(samples).tensors
-        B, C, H, W = samples_tensor.shape
-        device = samples[0].device
+        nested_tensor = nested_tensor_from_tensor_list(samples)
+        samples_tensor = nested_tensor.tensors
+        mask = nested_tensor.mask
+        # B, C, H, W = samples_tensor.shape
+        # device = samples[0].device
         dino_features = self.dinov3_feature_extractor.predict(samples_tensor)
         enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
-        mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
+        # mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
         return super().forward(NestedTensor(enhanced_samples, mask))
 
 
@@ -598,7 +603,7 @@ def build(args, train=True):
 
     if not train:
         return model
-    
+
     linear_head.train()
 
     device = torch.device(args.device)
