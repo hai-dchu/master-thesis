@@ -109,6 +109,8 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--job_name', default='train_stru3d', type=str)
 
+    parser.add_argument('--wandb', default=False, action='store_true', help='if added, initiate remote logging')
+
     return parser
 
 
@@ -119,9 +121,10 @@ def main(args):
     print(args)
 
     # setup wandb for logging
-    utils.setup_wandb()
-    wandb.init(project="RoomFormer")
-    wandb.run.name = args.run_name
+    if args.wandb:
+        utils.setup_wandb()
+        wandb.init(project="RoomFormer")
+        wandb.run.name = args.run_name
 
     device = torch.device(args.device)
 
@@ -201,7 +204,7 @@ def main(args):
 
     output_dir = Path(args.output_dir)
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         missing_keys, unexpected_keys = model.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
@@ -259,8 +262,9 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
         
-        wandb.log({"epoch": epoch})
-        wandb.log({"lr_rate": train_stats['lr']})
+        if args.wandb:
+            wandb.log({"epoch": epoch})
+            wandb.log({"lr_rate": train_stats['lr']})
 
         train_log_dict = {
                 "train/loss": train_stats['loss'],
