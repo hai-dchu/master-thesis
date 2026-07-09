@@ -9,3 +9,5 @@ preparation/*
 # RoomFormer
 RoomFormer/output*
 RoomFormer/wandb*
+
+slurm-*.out
