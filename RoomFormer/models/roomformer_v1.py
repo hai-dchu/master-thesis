@@ -533,24 +533,30 @@ class EnhancedRoomFormer(RoomFormer):
         nested_tensor = nested_tensor_from_tensor_list(samples)
         samples_tensor = nested_tensor.tensors
         mask = nested_tensor.mask
-
         # B, C, H, W = samples_tensor.shape
         # device = samples[0].device
         dino_features = self.dinov3_feature_extractor(samples_tensor)
-        enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
+        # enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
         # mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
-        return super().forward(NestedTensor(enhanced_samples, mask))
+        return super().forward(NestedTensor(dino_features, mask))
 
     def predict(self, samples):
+        # samples_tensor = nested_tensor_from_tensor_list(samples).tensors
+        # B, C, H, W = samples_tensor.shape
+        # device = samples[0].device
+        # dino_features = self.dinov3_feature_extractor.predict(samples_tensor)
+        # enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
+        # mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
+        # return super().forward(NestedTensor(enhanced_samples, mask))
         nested_tensor = nested_tensor_from_tensor_list(samples)
         samples_tensor = nested_tensor.tensors
         mask = nested_tensor.mask
         # B, C, H, W = samples_tensor.shape
         # device = samples[0].device
         dino_features = self.dinov3_feature_extractor.predict(samples_tensor)
-        enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
+        # enhanced_samples = torch.cat([samples_tensor, dino_features], dim=1)
         # mask = torch.zeros((B, H, W), dtype=torch.bool, device=device)
-        return super().forward(NestedTensor(enhanced_samples, mask))
+        return super().forward(NestedTensor(dino_features, mask))
 
 
 def build(args, train=True):
