@@ -268,7 +268,7 @@ def evaluate_floor(model, dataset_name, data_loader, device, output_dir, plot_pr
                 curr_data_rw = S3DRW(curr_opts, mode = "test")
                 evaluator = Evaluator(curr_data_rw, curr_opts)
             elif dataset_name == 'scenecad':
-                gt_polys = [gt_instances[i].gt_masks.polygons[0][0].reshape(-1,2).astype(np.int)]
+                gt_polys = [gt_instances[i].gt_masks.polygons[0][0].reshape(-1,2).astype(np.int64)]
                 evaluator = Evaluator_SceneCAD()
 
             print("Running Evaluation for scene %s" % scene_ids[i])
