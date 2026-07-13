@@ -34,4 +34,5 @@ python main.py --dataset_name=stru3d \
                --job_name=train_stru3d \
                --wandb \
                --output_dir=/scratch/project_2019597/master-thesis/output-v0 \
-               --resume=/scratch/project_2019597/master-thesis/output-v0/2026-07-08-09-22-57_train_stru3d/checkpoint.pth
+               --seed=16
+            #    --resume=/scratch/project_2019597/master-thesis/output-v0/2026-07-08-09-22-57_train_stru3d/checkpoint.pth
