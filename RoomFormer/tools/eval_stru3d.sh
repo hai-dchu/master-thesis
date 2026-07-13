@@ -11,4 +11,5 @@ python eval.py --dataset_name=stru3d \
                --output_dir=eval_stru3d \
                --num_queries=800 \
                --num_polys=20 \
-               --semantic_classes=-1 
+               --semantic_classes=-1 \
+               --seed=16

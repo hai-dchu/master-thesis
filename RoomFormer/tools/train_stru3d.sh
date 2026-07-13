@@ -5,4 +5,5 @@ python main.py --dataset_name=stru3d \
                --num_queries=800 \
                --num_polys=20 \
                --semantic_classes=-1 \
-               --job_name=train_stru3d
+               --job_name=train_stru3d \
+               --seed=16
