@@ -39,4 +39,4 @@ python main_v2.py --dataset_name=stru3d \
                --dinov3_n_last_layers=4 \
                --dinov3_checkpoint='checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth' \
                --wandb \
-               --output-dir=output-v2
+               --output-dir=/scratch/project_2019597/master-thesis/output-v2
