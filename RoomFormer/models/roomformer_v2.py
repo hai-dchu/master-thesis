@@ -212,9 +212,9 @@ class RoomFormer(nn.Module):
         bs = samples.tensors.shape[0]
         srcs = []
         masks = []
-        for l, feat in enumerate(features):
+        for idx, feat in enumerate(features):
             src, mask = feat.decompose()
-            src_proj = self.input_proj[l](src)
+            src_proj = self.input_proj[idx](src)
             if src_proj.shape[-2:] == dino_features.shape[-2:]:
                 src_proj = src_proj + dino_features
             srcs.append(src_proj)
@@ -222,11 +222,11 @@ class RoomFormer(nn.Module):
             assert mask is not None
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
+            for idx in range(_len_srcs, self.num_feature_levels):
+                if idx == _len_srcs:
+                    src = self.input_proj[idx](features[-1].tensors)
                 else:
-                    src = self.input_proj[l](srcs[-1])
+                    src = self.input_proj[idx](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(
                     torch.bool
@@ -312,7 +312,7 @@ class SetCriterion(nn.Module):
         """
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"]
-        bs = src_logits.shape[0]
+        # bs = src_logits.shape[0]
 
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat(
@@ -373,7 +373,7 @@ class SetCriterion(nn.Module):
         """
         assert "pred_coords" in outputs
         idx = self._get_src_permutation_idx(indices)
-        bs = outputs["pred_coords"].shape[0]
+        # bs = outputs["pred_coords"].shape[0]
         src_polys = outputs["pred_coords"][idx]
         target_polys = torch.cat(
             [t["coords"][i] for t, (_, i) in zip(targets, indices)], dim=0
@@ -462,7 +462,7 @@ class SetCriterion(nn.Module):
             for loss in self.losses:
                 # l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices)
                 l_dict = self.get_loss(loss, enc_outputs, targets, indices)
-                l_dict = {k + f"_enc": v for k, v in l_dict.items()}
+                l_dict = {k + "_enc": v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
         return losses
@@ -520,14 +520,14 @@ def build(args, train=True):
     weight_dict["loss_dir"] = 1
 
     enc_weight_dict = {}
-    enc_weight_dict.update({k + f"_enc": v for k, v in weight_dict.items()})
+    enc_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
     weight_dict.update(enc_weight_dict)
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
         for i in range(args.dec_layers - 1):
             aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
-        aux_weight_dict.update({k + f"_enc": v for k, v in weight_dict.items()})
+        aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
     losses = ["labels", "polys", "cardinality"]
