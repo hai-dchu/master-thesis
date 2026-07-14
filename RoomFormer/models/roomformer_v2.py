@@ -207,7 +207,8 @@ class RoomFormer(nn.Module):
         dino_inter = self.dinov3.get_intermediate_layers(
             transformed_input, n=self.dinov3_n_last_layers, reshape=True, norm=True
         )[-1]  # Get last feature from DINOv3 feature map
-        dino_features = self.dino_proj(dino_inter)
+               # batch_sizexdino_in_channelsx16x16
+        dino_features = self.dino_proj(dino_inter) # batch_sizextransformer_d_modelx16x16
 
         bs = samples.tensors.shape[0]
         srcs = []
