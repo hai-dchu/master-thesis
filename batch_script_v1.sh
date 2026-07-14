@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=RoomFormer-Vanilla
-#SBATCH --account=project_2019597
+#SBATCH --account=project_2019895
 #SBATCH --partition=gpumedium
 #SBATCH --time=10:00:00
 #SBATCH --nodes=1
@@ -23,8 +23,8 @@ before passing through the rest of RoomFormer.
 "
 
 # Export environment variables
-export PATH="/projappl/project_2019597/master-thesis/environments/bin:$PATH"
-export PYTHONUSERBASE="/projappl/project_2019597/master-thesis/environments/"
+export PATH="/projappl/project_2019895/master-thesis/environments/bin:$PATH"
+export PYTHONUSERBASE="/projappl/project_2019895/master-thesis/environments/"
 
 # Run after running tykky
 cd RoomFormer
@@ -39,4 +39,4 @@ python main_v1.py --dataset_name=stru3d \
                --lr_dinov3_head=0.001 \
                --dinov3_checkpoint='checkpoints/dinov3_vits16_pretrain_lvd1689m-08c60483.pth' \
                --wandb \
-               --output_dir='/scratch/project_2019597/master-thesis/output-v1'
+               --output_dir='/scratch/project_2019895/master-thesis/output-v1'
