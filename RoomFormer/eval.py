@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import util.misc as utils
-from datasets import build_dataset
+from datasets import build_poly_dataset as build_dataset
 from engine import evaluate_floor
 from models import build_model_v0 as build_model
 
