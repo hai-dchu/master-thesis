@@ -41,11 +41,14 @@ def main(args):
 
     for scene in tqdm(scenes):
         scene_path = os.path.join(data_root, scene)
-        reader = PointCloudReaderPanorama(
-            scene_path, random_level=0, generate_color=True, downsample=args.downsample
-        )
-        save_path = os.path.join(scene_path, "point_cloud.ply")
-        reader.export_ply(save_path)
+        try:
+            reader = PointCloudReaderPanorama(
+                scene_path, random_level=0, generate_color=True, downsample=args.downsample
+            )
+            save_path = os.path.join(scene_path, "point_cloud.ply")
+            reader.export_ply(save_path)
+        except Exception:
+            print(f'{scene_path} is corrupted')
 
 
 if __name__ == "__main__":

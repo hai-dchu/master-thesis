@@ -48,10 +48,23 @@ class PointCloudReaderPanorama:
             os.path.join(*[path, "2D_rendering", p, "panorama", "camera_xyz.txt"])
             for p in sections
         ]
-        self.camera_centers = self.read_camera_center()
-        self.point_cloud = self.generate_point_cloud(
-            self.random_level, color=self.generate_color
-        )
+        try:
+            for p in self.depth_paths:
+                assert os.path.exists(p), f"{p} not found"
+
+            for p in self.rgb_paths:
+                assert os.path.exists(p), f"{p} not found"
+
+            for p in self.camera_paths:
+                assert os.path.exists(p), f"{p} not found"
+                    
+            self.camera_centers = self.read_camera_center()
+            self.point_cloud = self.generate_point_cloud(
+                self.random_level, color=self.generate_color
+            )
+
+        except AssertionError:
+            print(f"scene {self.path} is corrupted")
 
     def read_camera_center(self):
         camera_centers = []
