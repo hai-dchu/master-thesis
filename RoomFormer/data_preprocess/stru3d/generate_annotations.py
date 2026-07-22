@@ -15,6 +15,7 @@
 # --------------------------------------------------------------------------------------------
 
 import argparse
+import shutil
 import json
 import os
 import sys
@@ -126,74 +127,77 @@ def main(args):
     ### begin processing
     instance_id = 0
     for scene in tqdm(scenes):
-        scene_path = os.path.join(data_root, scene)
-        scene_id = scene.split("_")[-1]
+        try:
+            scene_path = os.path.join(data_root, scene)
+            scene_id = scene.split("_")[-1]
 
-        if int(scene_id) in INVALID_SCENES:
-            print("skip {}".format(scene))
-            continue
+            if int(scene_id) in INVALID_SCENES:
+                print("skip {}".format(scene))
+                continue
 
-        # load pre-generated point cloud
-        ply_path = os.path.join(scene_path, "point_cloud.ply")
-        points = read_scene_pc(ply_path)
-        xyz = points[:, :3]
+            # load pre-generated point cloud
+            ply_path = os.path.join(scene_path, "point_cloud.ply")
+            points = read_scene_pc(ply_path)
+            xyz = points[:, :3]
 
-        ### project point cloud to density map
-        density, normalization_dict = generate_density(
-            xyz, width=args.output_width, height=args.output_height
-        )
+            ### project point cloud to density map
+            density, normalization_dict = generate_density(
+                xyz, width=args.output_width, height=args.output_height
+            )
 
-        ### rescale raw annotations
-        normalized_annos = normalize_annotations(scene_path, normalization_dict)
+            ### rescale raw annotations
+            normalized_annos = normalize_annotations(scene_path, normalization_dict)
 
-        ### prepare coco dict
-        img_id = int(scene_id)
-        img_dict = {}
-        img_dict["file_name"] = os.path.join(scene, "density.png")
-        img_dict["id"] = img_id
-        img_dict["width"] = args.output_width
-        img_dict["height"] = args.output_height
+            ### prepare coco dict
+            img_id = int(scene_id)
+            img_dict = {}
+            img_dict["file_name"] = os.path.join(scene, "density.png")
+            img_dict["id"] = img_id
+            img_dict["width"] = args.output_width
+            img_dict["height"] = args.output_height
 
-        ### parse annotations
-        polys = parse_floor_plan_polys(normalized_annos)
-        polygons_list = generate_coco_dict(
-            normalized_annos, polys, instance_id, img_id, ignore_types=["outwall"]
-        )
+            ### parse annotations
+            polys = parse_floor_plan_polys(normalized_annos)
+            polygons_list = generate_coco_dict(
+                normalized_annos, polys, instance_id, img_id, ignore_types=["outwall"]
+            )
 
-        instance_id += len(polygons_list)
+            instance_id += len(polygons_list)
 
-        ### train
-        if int(scene_id) < 3000:
-            coco_train_dict["images"].append(img_dict)
-            coco_train_dict["annotations"] += polygons_list
-            density_out_dir = os.path.join(train_img_folder, scene)
-            if not os.path.exists(density_out_dir):
-                os.mkdir(density_out_dir)
-            export_density(density, density_out_dir, "density")
-            os.rename(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+            ### train
+            if int(scene_id) < 3000:
+                coco_train_dict["images"].append(img_dict)
+                coco_train_dict["annotations"] += polygons_list
+                density_out_dir = os.path.join(train_img_folder, scene)
+                if not os.path.exists(density_out_dir):
+                    os.mkdir(density_out_dir)
+                export_density(density, density_out_dir, "density")
+                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
-        ### val
-        elif int(scene_id) >= 3000 and int(scene_id) < 3250:
-            coco_val_dict["images"].append(img_dict)
-            coco_val_dict["annotations"] += polygons_list
-            density_out_dir = os.path.join(val_img_folder, scene)
-            if not os.path.exists(density_out_dir):
-                os.mkdir(density_out_dir)
-            export_density(density, density_out_dir, "density")
-            os.rename(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+            ### val
+            elif int(scene_id) >= 3000 and int(scene_id) < 3250:
+                coco_val_dict["images"].append(img_dict)
+                coco_val_dict["annotations"] += polygons_list
+                density_out_dir = os.path.join(val_img_folder, scene)
+                if not os.path.exists(density_out_dir):
+                    os.mkdir(density_out_dir)
+                export_density(density, density_out_dir, "density")
+                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
-        ### test
-        else:
-            coco_test_dict["images"].append(img_dict)
-            coco_test_dict["annotations"] += polygons_list
-            density_out_dir = os.path.join(test_img_folder, scene)
-            if not os.path.exists(density_out_dir):
-                os.mkdir(density_out_dir)
-            export_density(density, density_out_dir, "density")
-            os.rename(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+            ### test
+            else:
+                coco_test_dict["images"].append(img_dict)
+                coco_test_dict["annotations"] += polygons_list
+                density_out_dir = os.path.join(test_img_folder, scene)
+                if not os.path.exists(density_out_dir):
+                    os.mkdir(density_out_dir)
+                export_density(density, density_out_dir, "density")
+                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
-        if args.verbose:
-            print(scene_id)
+            if args.verbose:
+                print(scene_id)
+        except Exception as e:
+            print(f"{type(e).__name__}- {e}")
 
     with open(coco_train_json_path, "w") as f:
         json.dump(coco_train_dict, f)

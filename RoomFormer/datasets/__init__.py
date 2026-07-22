@@ -1,5 +1,5 @@
 from .poly_data import build as build_poly
-from .ply_data import build as build_ply
+from .dino_cube_data import build as build_cube_poly
 
 def build_poly_dataset(image_set, args):
     if args.semantic_classes > 0:
@@ -9,4 +9,4 @@ def build_poly_dataset(image_set, args):
     raise ValueError(f'dataset {args.dataset_name} not supported')
 
 def build_mixed_dataset(image_set, args):
-    return build_ply(image_set, args)
+    return build_cube_poly(image_set, args)

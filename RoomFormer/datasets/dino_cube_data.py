@@ -8,14 +8,12 @@
 # ---------------------------------------------------------------------------------
 
 import os
-import json
 from typing import Tuple
 
 import numpy as np
 import torch
 from plyfile import PlyData
 from pycocotools.coco import COCO
-from scipy.spatial.transform import Rotation
 from PIL import Image
 
 from util.poly_ops import resort_corners
@@ -26,17 +24,22 @@ from detectron2.data.detection_utils import (
 )
 from detectron2.structures import BoxMode
 
+FACES = ["U", "F", "R", "L", "B", "D"]
+
 
 # Each folder consists of:
 # |- train/test/val
 #   |- scene_<scene_id>
+#     |- <room_id>
+#       |- img_<orientation>.png for orientation in (U, D, R, L, F, B)
+#       |- dep_<orientation>.png for orientation in (U, D, R, L, F, B)
+#       |- mask_<orientation>.npy for orientation in (U, D, R, L, F, B)
 #     |- density.png
 #     |- point_cloud.ply
-class PlyDataset(torch.utils.data.Dataset):
+class CubePolyDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         data_dir: str,
-        num_points: int,
         transforms,
         aug_rotate: bool = False,
         aug_flip: bool = False,
@@ -47,12 +50,11 @@ class PlyDataset(torch.utils.data.Dataset):
         assert mode in ["train", "test", "val"], (
             "mode should be one of (train, test, val), default=train"
         )
-        super(PlyDataset, self).__init__()
+        super(CubePolyDataset, self).__init__()
         self.mode = mode
         self.data_dir = os.path.abspath(data_dir)
         self.data_root = os.path.join(self.data_dir, mode)
         self.scene_ids = sorted(os.listdir(self.data_root))
-        self.num_points = num_points
 
         self.aug_rotate = aug_rotate
         self.aug_flip = aug_flip
@@ -82,42 +84,66 @@ class PlyDataset(torch.utils.data.Dataset):
         ).float()
 
         colors = np.stack([vertex["red"], vertex["green"], vertex["blue"]], axis=-1)
-        features = colors_to_features(colors)
 
-        return xyz, features
+        return xyz, colors
+
+    def _load_masks(self, scene_id: str):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        rooms = os.listdir(os.path.join(self.data_root, scene_id))
+        masks = {}
+        for room in rooms:
+            path = os.path.join(self.data_root, scene_id, room)
+            if not os.path.isdir(path):
+                continue
+            tmp = {}
+            for face in FACES:
+                tmp[face] = torch.from_numpy(
+                    np.load(os.path.join(path, f"mask_{face}.npy"))
+                )
+            masks[room] = tmp
+        return masks
+
+    def _load_cubes(self, scene_id: str):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        rooms = os.listdir(os.path.join(self.data_root, scene_id))
+        faces = {}
+        for room in rooms:
+            path = os.path.join(self.data_root, scene_id, room)
+            if not os.path.isdir(path):
+                continue
+            tmp = {}
+            for face in FACES:
+                tmp[face] = torch.from_numpy(
+                    np.array(Image.open(os.path.join(path, f"img_{face}.png")))
+                )
+            faces[room] = tmp
+
+        return faces
+
+    def _load_depths(self, scene_id: str):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        rooms = os.listdir(os.path.join(self.data_root, scene_id))
+        depths = {}
+        for room in rooms:
+            path = os.path.join(self.data_root, scene_id, room)
+            if not os.path.isdir(path):
+                continue
+            tmp = {}
+            for face in FACES:
+                tmp[face] = torch.from_numpy(
+                    np.array(Image.open(os.path.join(path, f"dep_{face}.png")))
+                )
+            depths[room] = tmp
+
+        return depths
 
     def __getitem__(self, index):
-        scene_id = self.scene_ids[index]
-
-        # Load point cloud
-        # for debugging purpose
-        view_transform = torch.eye(3, dtype=torch.float32)
-
-        xyz, features = self._load_point_cloud(scene_id)
-
-        if self.aug_rotate:
-            R = Rotation.from_euler("y", np.random.rand() * 360, degrees=True)
-            R = torch.from_numpy(R.as_matrix()).float()
-            xyz = xyz @ R.T
-            view_transform = R @ view_transform
-
-        if self.aug_flip and np.random.rand() < 0.5:
-            xyz[:, 0] = -xyz[:, 0]
-            flip = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float32))
-            view_transform = flip @ view_transform
-
-        min_xyz, max_xyz, q_diff = compute_norm_params(xyz)
-        xyz = (xyz - min_xyz) / q_diff
-        idx = sample_indices(xyz, scene_id, self.num_points)
-        xyz = xyz[idx]
-        features = features[idx]
-
-        item = {
-            "xyz": xyz.float(),  # [num_pts, 3]
-            "features": features.float(),  # [num_pts, 3] # RGB
-            "min_xyz": min_xyz.float(),  # [3]
-            "max_xyz": max_xyz.float(),  # [3]
-        }
+        """
+        Each item return consists of:
+        - COCO object for density map
+        - Faces: cube map faces of shape (6) (U, D, R, L, F, B) from panorama
+        - Masks: dict of shape (point_cloud_size, ), keys in (U, D, R, L, F, B) containing which (3D) points are visible in each face
+        """
         # Load density map
         coco = self.coco
         img_id = self.ids[index]
@@ -130,58 +156,13 @@ class PlyDataset(torch.utils.data.Dataset):
         path = coco.loadImgs(img_id)[0]["file_name"]
 
         record = self.prepare(img_id, path, target)
-        record["point_cloud"] = item
+
+        scene_id = self.scene_ids[index]
+        record["masks"] = self._load_masks(scene_id)
+        record["cubes"] = self._load_cubes(scene_id)
+        record["depths"] = self._load_depths(scene_id)
 
         return record
-
-
-def collate_fn(batch: list[dict]) -> dict:
-    collated = {
-        "xyz": torch.stack([item["xyz"] for item in batch]),
-        "features": torch.stack([item["features"] for item in batch]),
-        "min_xyz": torch.stack([item["min_xyz"] for item in batch]),
-        "max_xyz": torch.stack([item["max_xyz"] for item in batch]),
-    }
-
-    return collated
-
-
-def compute_norm_params(
-    xyz: torch.Tensor, pad: float = 2.0
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    min_xyz = xyz.min(dim=0).values - pad
-    max_xyz = xyz.max(dim=0).values + pad
-    q_diff = max_xyz - min_xyz + 1e-6
-    return min_xyz, max_xyz, q_diff
-
-
-def sample_indices(xyz: torch.Tensor, name: str, num_points: int) -> torch.Tensor:
-    if len(xyz) == 0:
-        raise ValueError(f"No points found in {name} point cloud.")
-
-    replace = len(xyz) < num_points
-    if replace:
-        return torch.randint(0, len(xyz), (num_points,))
-    return torch.randperm(len(xyz))[:num_points]
-
-
-def sample_unique_indices(
-    xyz: torch.Tensor, name: str, num_points: int
-) -> torch.Tensor:
-    if num_points <= 0:
-        return torch.empty(0, dtype=torch.long)
-    if num_points >= len(xyz):
-        return torch.arange(len(xyz), dtype=torch.long)
-    return sample_indices(xyz, name, num_points)
-
-
-def colors_to_features(rgb) -> torch.Tensor:
-    assert rgb is not None, "RGB data not available"
-
-    features = np.asarray(rgb, dtype=np.float32) / 255.0
-    features = torch.from_numpy(features).float()
-
-    return features
 
 
 class ConvertToCocoDict(object):
@@ -266,9 +247,8 @@ def build(mode, args):
     )
     dataset_root = os.path.abspath(args.dataset_root)
 
-    dataset = PlyDataset(
+    dataset = CubePolyDataset(
         dataset_root,
-        num_points=args.num_points,
         transforms=make_poly_transforms(mode),
         aug_rotate=True,
         aug_flip=True,
