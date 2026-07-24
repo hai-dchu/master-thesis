@@ -92,8 +92,10 @@ class CubeMapReader:
             img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
             depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
 
-            img_dict = py360convert.e2c(img, face_w=self.face_w, cube_format="dict")
-            depth_dict = py360convert.e2c(
+            self.img_dict = py360convert.e2c(
+                img, face_w=self.face_w, cube_format="dict"
+            )
+            self.depth_dict = py360convert.e2c(
                 depth[:, :, None], face_w=self.face_w, cube_format="dict"
             )
             # [:, :, None] is used to expand [width, height] to [width, height, channel]
@@ -105,8 +107,8 @@ class CubeMapReader:
                 if self.verbose:
                     print(img_name, dep_name)
 
-                cv2.imwrite(img_name, img_dict[face])
-                cv2.imwrite(dep_name, depth_dict[face])
+                cv2.imwrite(img_name, self.img_dict[face])
+                cv2.imwrite(dep_name, self.depth_dict[face])
 
     def _get_cubemap_intrinsics(self, width) -> np.array:
         """
@@ -118,8 +120,31 @@ class CubeMapReader:
         K = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=np.float32)
         return K
 
+    def radial_to_planar_depth(self, depth_radial, K):
+        """Converts 360 radial depth map into pinhole planar Z-depth map."""
+        h, w = depth_radial.shape[:2]
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        x_dir = (x - cx) / fx
+        y_dir = (y - cy) / fy
+        ray_length = np.sqrt(x_dir**2 + y_dir**2 + 1.0)
+
+        return (depth_radial.squeeze() / ray_length).astype(np.float32)
+
     def _get_points_in_face(
-        self, pts_3d, colors, K, R_face, R_base, T_cam, img_w, img_h
+        self,
+        pts_3d,
+        colors,
+        K,
+        R_face,
+        R_base,
+        T_cam,
+        depth,
+        img_w,
+        img_h,
+        depth_tol=10.0,
     ):
         """
         Transforms 3D points into camera space and determines which points project
@@ -142,7 +167,28 @@ class CubeMapReader:
         # 5. Filter points strictly inside pixel bounds
         in_bounds = (u >= 0) & (u < img_w) & (v >= 0) & (v < img_h) & valid_z
 
-        return in_bounds, u[in_bounds], v[in_bounds]
+        u_valid = u[in_bounds].astype(int)
+        v_valid = v[in_bounds].astype(int)
+        z_point = pts_cam[in_bounds, 2]
+
+        # 6. DEPTH VERIFICATION (Occlusion / Distance Agreement)
+        # Query corresponding planar depth from face depth map
+        # Since our data already contains a depth cube map, it is simpler to account for occlusion
+        # as depth-mismatch point (up to depth_tol) are considered occluded and should be hidden
+
+        z_map_expected = depth[v_valid, u_valid]
+
+        # Keep points whose 3D depth matches the face depth map within tolerance
+        depth_match = (np.abs(z_point - z_map_expected) <= depth_tol) & (
+            z_map_expected > 0
+        )
+
+        # Combine masks
+        final_mask = np.zeros_like(in_bounds, dtype=bool)
+        final_indices = np.where(in_bounds)[0][depth_match]
+        final_mask[final_indices] = True
+
+        return final_mask, u[final_mask], v[final_mask]
 
     def export_masks(self):
         plydata = PlyData.read(self.ply_path)
@@ -171,11 +217,27 @@ class CubeMapReader:
                 )
         else:
             # Default fallback color (gray) if PLY lacks RGB channels
-            print("no rgb")
+            if self.verbose:
+                print("no rgb. fallback to gray")
             colors_world = np.ones_like(pts_3d_world) * 0.5
 
         if self.verbose:
             print(f"Loaded Point Cloud: {pts_3d_world.shape[0]} points")
+
+        # Precompute Planar Z-Depth for each cubemap face
+        K_face = np.array(
+            [
+                [self.face_w / 2.0, 0, self.face_w / 2.0],
+                [0, self.face_w / 2.0, self.face_w / 2.0],
+                [0, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+
+        depth_planar_dict = {
+            key: self.radial_to_planar_depth(self.depth_dict[key], K_face)
+            for key in self.img_dict.keys()
+        }
 
         for room, xyz in zip(self.rooms, self.cam_xyz_paths):
             with open(xyz, "r") as f:
@@ -186,18 +248,25 @@ class CubeMapReader:
             out_path = self.out_dir / room
             for face in FACES:
                 R_face = ROTATIONS[face]
-                mask, _, _ = self._get_points_in_face(
+                depth = depth_planar_dict[face]
+                mask, u_valid, v_valid = self._get_points_in_face(
                     pts_3d_world,
                     colors_world,
                     self.K_face,
                     R_face,
                     self.R_base,
                     Ts,
+                    depth,
                     self.face_w,
                     self.face_w,
                 )
 
+                prj_points = np.stack([u_valid, v_valid], axis=1)
+
                 mask_name = out_path / f"mask_{face}"
+                prj_points_name = out_path / f"prj_points_{face}"
                 if self.verbose:
                     print(f"save mask to {mask_name}.npy")
+                    print(f"save projected points to {prj_points_name}.npy")
                 np.save(mask_name, mask)
+                np.save(prj_points_name, prj_points)

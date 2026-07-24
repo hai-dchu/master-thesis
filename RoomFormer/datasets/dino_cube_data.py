@@ -83,7 +83,9 @@ class CubePolyDataset(torch.utils.data.Dataset):
             np.stack([vertex["x"], vertex["y"], vertex["z"]], axis=-1)
         ).float()
 
-        colors = np.stack([vertex["red"], vertex["green"], vertex["blue"]], axis=-1)
+        colors = torch.from_numpy(
+            np.stack([vertex["red"], vertex["green"], vertex["blue"]], axis=-1)
+        )
 
         return xyz, colors
 
@@ -137,6 +139,24 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         return depths
 
+    def _load_prj_points(self, scene_id: str):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        rooms = os.listdir(os.path.join(self.data_root, scene_id))
+        points = {}
+        for room in rooms:
+            path = os.path.join(self.data_root, scene_id, room)
+            if not os.path.isdir(path):
+                continue
+            tmp = {}
+            for face in FACES:
+                tmp[face] = torch.from_numpy(
+                    np.load(os.path.join(path, f"prj_points_{face}.npy"))
+                )
+
+            points[room] = tmp
+
+        return points
+
     def __getitem__(self, index):
         """
         Each item return consists of:
@@ -161,6 +181,9 @@ class CubePolyDataset(torch.utils.data.Dataset):
         record["masks"] = self._load_masks(scene_id)
         record["cubes"] = self._load_cubes(scene_id)
         record["depths"] = self._load_depths(scene_id)
+        point_cloud, _ = self._load_point_cloud(scene_id)
+        record["point_cloud"] = point_cloud
+        record["project_points"] = self._load_prj_points(scene_id)
 
         return record
 
