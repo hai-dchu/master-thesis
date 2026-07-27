@@ -8,21 +8,19 @@
 # ---------------------------------------------------------------------------------
 
 import os
-from typing import Tuple
 
 import numpy as np
 import torch
-from plyfile import PlyData
-from pycocotools.coco import COCO
-from PIL import Image
-
-from util.poly_ops import resort_corners
 from detectron2.data import transforms as T
 from detectron2.data.detection_utils import (
     annotations_to_instances,
     transform_instance_annotations,
 )
 from detectron2.structures import BoxMode
+from PIL import Image
+from plyfile import PlyData
+from pycocotools.coco import COCO
+from util.poly_ops import resort_corners
 
 FACES = ["U", "F", "R", "L", "B", "D"]
 
@@ -50,7 +48,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert mode in ["train", "test", "val"], (
             "mode should be one of (train, test, val), default=train"
         )
-        super(CubePolyDataset, self).__init__()
+        super().__init__()
         self.mode = mode
         self.data_dir = os.path.abspath(data_dir)
         self.data_root = os.path.join(self.data_dir, mode)
@@ -62,7 +60,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         ann_file = os.path.join(self.data_dir, "annotations", f"{self.mode}.json")
         self.coco = COCO(ann_file)
-        self.ids = list(sorted(self.coco.imgs.keys()))
+        self.ids = sorted(self.coco.imgs.keys())
 
         self._transforms = transforms
         self.prepare = ConvertToCocoDict(self.data_root, self._transforms)
@@ -73,7 +71,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
     def _get_image(self, path):
         return Image.open(os.path.join(self.data_root, path))
 
-    def _load_point_cloud(self, scene_id: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _load_point_cloud(self, scene_id: str) -> tuple[torch.Tensor, torch.Tensor]:
         assert scene_id in self.scene_ids, "scene_id not found"
         ply_path = os.path.join(self.data_root, scene_id, "point_cloud.ply")
         plydata = PlyData.read(ply_path)
@@ -188,7 +186,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         return record
 
 
-class ConvertToCocoDict(object):
+class ConvertToCocoDict:
     def __init__(self, root, augmentations):
         self.root = root
         self.augmentations = augmentations
