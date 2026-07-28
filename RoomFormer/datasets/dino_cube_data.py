@@ -243,18 +243,19 @@ class ConvertToCocoDict:
 def make_poly_transforms(image_set):
 
     if image_set == "train":
-        return T.AugmentationList(
-            [
-                T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-                T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-                T.RandomRotation(
-                    [0.0, 90.0, 180.0, 270.0],
-                    expand=False,
-                    center=None,
-                    sample_style="choice",
-                ),
-            ]
-        )
+        return None
+        # return T.AugmentationList(
+        #     [
+        #         T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+        #         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+        #         T.RandomRotation(
+        #             [0.0, 90.0, 180.0, 270.0],
+        #             expand=False,
+        #             center=None,
+        #             sample_style="choice",
+        #         ),
+        #     ]
+        # )
 
     if image_set == "val" or image_set == "test":
         return None
@@ -271,8 +272,8 @@ def build(mode, args):
     dataset = CubePolyDataset(
         dataset_root,
         transforms=make_poly_transforms(mode),
-        aug_rotate=True,
-        aug_flip=True,
+        aug_rotate=False,
+        aug_flip=False,
         semantic_classes=args.semantic_classes,
         mode=mode,
     )

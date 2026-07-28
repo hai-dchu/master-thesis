@@ -1,6 +1,9 @@
 # Modified from Deformable DETR
 # Yuanwen Yue
 
+# Modified from RoomFormer
+# Hai Chu
+
 import copy
 import math
 import os
@@ -16,6 +19,7 @@ from util.misc import (
 
 from .backbone_v3 import build_backbone
 from .deformable_transformer import build_deformable_transformer
+from .dino_bev import build as build_dino_bev
 from .losses import MaskRasterizationLoss, custom_L1_loss
 from .matcher import build_matcher
 
@@ -30,20 +34,99 @@ def _get_clones(module, N):
 #
 # Hai Chu
 
-# TODO: Change RoomFormer input to include the required inputs
-# for DINO_BEV module. Or call DINO_BEV first, stack the output
-# on top of the input image, and change ResNet input channels
-# to accommodate for the new input channels (1 + pca_outdim)
 
-
+# Or call DINO_BEV first, stack the output on top of the input
+# image, and change ResNet input channels to accommodate for
+# the new input channels (1 + pca_outdim)
+#
 # Which mean for the first version, RoomFormer architecture is
 # kept intact, and the only changes are in backbone.py
+#
+# Well this didn't work so guess I will go back to the last todo
+
+# TODO: Change RoomFormer input to include the required inputs
+# for DINO_BEV module.
+
+
+class DINOMultiLayeredAdapter(nn.Module):
+    def __init__(
+        self,
+        dino_bev: nn.Module,
+        num_feature_levels: int,
+        num_backbone_outs: int,
+        in_channels: int,  # args.pca_outdim
+        hidden_dim: int,
+        out_width: list[int], # 
+    ):
+        super().__init__()
+        self.dino_bev = dino_bev
+        patch_size = [hidden_dim // x for x in out_width]  # should be 32, 16, 8, 4
+        input_proj = []
+        for i in range(num_backbone_outs):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+        for i in range(num_backbone_outs, num_feature_levels):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+            in_channels = hidden_dim
+        
+        self.input_proj = nn.ModuleList(input_proj)
+
+        for conv, _ in self.input_proj:
+            nn.init.zeros_(conv.weight)
+            if conv.bias is not None:
+                nn.init.zeros_(conv.bias)
+
+
+    def forward(self, batch):
+        (
+            _,
+            _,
+            _,
+            _,
+            batched_room_faces,
+            _,
+            batched_point_clouds,
+            batched_prj_points,
+            batched_masks,
+        ) = batch
+        batch_scene_bev, batch_scene_mask, batch_scene_cnt, batch_scene_agree = (
+            self.dino_bev(
+                batched_room_faces,
+                batched_masks,
+                batched_point_clouds,
+                batched_prj_points,
+            )
+        )
+        out = [layer(batch_scene_bev) for layer in self.input_proj]
+        return out
+
+
 class RoomFormer(nn.Module):
     """This is the RoomFormer module that performs floorplan reconstruction"""
 
     def __init__(
         self,
         backbone,
+        dino_multilayer,
         transformer,
         num_classes,
         num_queries,
@@ -160,7 +243,10 @@ class RoomFormer(nn.Module):
         else:
             self.attention_mask = None
 
-    def forward(self, samples: NestedTensor):
+        # DINO_BEV
+        self.dino_multilayer = dino_multilayer
+
+    def forward(self, batch):
         """The forward expects a NestedTensor, which consists of:
            - samples.tensors: batched images, of shape [batch_size x C x H x W]
            - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -174,16 +260,30 @@ class RoomFormer(nn.Module):
            - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                             dictionnaries containing the two above keys for each decoder layer.
         """
+        (
+            _,
+            samples,
+            _,
+            _,
+            batched_room_faces,
+            batched_room_depths,
+            batched_point_clouds,
+            batched_prj_points,
+            batched_masks,
+        ) = batch
+
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
+
+        dino_feats_list = self.dino_multilayer(batch)
 
         bs = samples.tensors.shape[0]
         srcs = []
         masks = []
         for idx, feat in enumerate(features):
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[idx](src))
+            srcs.append(self.input_proj[idx](src) + dino_feats_list[idx])
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
@@ -483,9 +583,19 @@ def build(args, train=True):
 
     backbone = build_backbone(args)
     transformer = build_deformable_transformer(args)
+    dino_bev, pca = build_dino_bev(args)
+    dino_multilayer = DINOMultiLayeredAdapter(
+        dino_bev,
+        num_feature_levels=args.num_feature_levels,
+        num_backbone_outs=len(backbone.strides),
+        in_channels=args.pca_outdim,
+        hidden_dim=transformer.d_model,
+        out_width=[32, 16, 8, 4]
+    )
 
     model = RoomFormer(
         backbone,
+        dino_multilayer,
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
@@ -506,7 +616,7 @@ def build(args, train=True):
     # for k, v in old_weights["model"].items():
     #     if (
     #         k in new_model_dict # load transformer weights
-    #         and "backbone" not in k # not load ResNet weights
+    #         # and "backbone" not in k # not load ResNet weights
     #         and v.shape == new_model_dict[k].shape
     #     ):
     #         filtered_weights[k] = v
@@ -517,9 +627,9 @@ def build(args, train=True):
     if not train:
         return model
 
-    # for n, p in model.named_parameters():
-    #     if "decoder" in n:
-    #         p.requires_grad_(False)
+    # for k, v in new_model_dict.items():
+    #     if k not in old_weights['model']:
+    #         v.requires_grad_(True)
 
     device = torch.device(args.device)
     matcher = build_matcher(args)
@@ -549,4 +659,4 @@ def build(args, train=True):
     )
     criterion.to(device)
 
-    return model, criterion
+    return model, pca, criterion

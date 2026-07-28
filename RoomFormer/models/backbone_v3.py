@@ -98,7 +98,7 @@ class Backbone(BackboneBase):
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=True, norm_layer=norm_layer)
         # modify the first layer to compatible with multi-channel input
-        backbone.conv1 = nn.Conv2d(65, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         assert name not in ('resnet18', 'resnet34'), "number of channels are hard coded"
         super().__init__(backbone, train_backbone, return_interm_layers)
         if dilation:

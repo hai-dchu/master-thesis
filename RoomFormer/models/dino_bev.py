@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from torch import Tensor, nn
 from torchvision.transforms import v2
+from tqdm import tqdm
 
 
 def make_transform(resize_size: int = 256):
@@ -71,102 +72,6 @@ def extract_patch_grid(model: nn.Module, batch: Tensor):
 
 
 FACES = sorted(["U", "F", "R", "L", "B", "D"])
-
-
-class FixedPCAReducer(nn.Module):
-    """
-    This class assume the input (train_loader data) are cube map faces processed
-    with DINOv3, i.e. each input should have a dimension of (embed_dim, 3, 256, 256)
-    """
-
-    def __init__(self, in_channels=384, out_channels=64, verbose=False):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.verbose = verbose
-
-        # Register state buffers (they will hold fitted weights and support .to(device))
-        self.register_buffer("components", torch.zeros(in_channels, out_channels))
-        self.register_buffer("mean", torch.zeros(in_channels))
-        self.register_buffer("is_fitted", torch.tensor(False))
-
-    @torch.no_grad()
-    def fit(self, train_loader, device="cuda", max_samples=50000):
-        """
-        Fits PCA once across the training dataset using torch.pca_lowrank.
-
-        Parameters:
-            train_loader: PyTorch DataLoader yielding feature maps (B, C, H, W)
-            device: Device to perform PCA computation on ('cuda' or 'cpu')
-            max_samples: Subsample size limit to prevent memory overflow during fitting
-        """
-
-        if self.verbose:
-            print("--- Fitting PCA on Training Set ---")
-        collected_features = []
-        total_samples = 0
-
-        for batch in train_loader:
-            # Handle dictionary batch or raw tensor batch
-            for samples in batch:
-                # Reshape (B, C, H, W) -> (B * H * W, C)
-                # samples = torch.stack(samples)
-                _, C, _, _ = samples.shape
-                x_flat = samples.permute(0, 2, 3, 1).reshape(-1, C).to(device)
-
-                collected_features.append(x_flat)
-                total_samples += x_flat.shape[0]
-
-                if total_samples >= max_samples:
-                    break
-
-        # Concatenate samples: (N_samples, 384)
-        X = torch.cat(collected_features, dim=0)[:max_samples]
-
-        # 1. Compute and store empirical mean
-        mean = torch.mean(X, dim=0)
-        X_centered = X - mean
-
-        # 2. Compute low-rank SVD / PCA natively on GPU
-        # U: (N, q), S: (q,), V: (C, q) where q = out_channels
-        _, _, V = torch.pca_lowrank(X_centered, q=self.out_channels, center=False)
-
-        # 3. Store fitted parameters inside module buffers
-        self.mean.copy_(mean)
-        self.components.copy_(V[:, : self.out_channels])
-        self.is_fitted.fill_(True)
-
-        if self.verbose:
-            print(f"PCA fitted successfully on {X.shape[0]} samples!")
-            print(f"Reduced components shape: {self.components.shape}")
-
-    def forward(self, x):
-        """
-        Applies fixed PCA projection on batch features.
-
-        Input:  x of shape (B, 384, H, W)
-        Output: x_reduced of shape (B, 64, H, W)
-        """
-        if not self.is_fitted:
-            raise RuntimeError(
-                "PCAReducer must be fitted using `.fit(train_loader)` before calling forward!"
-            )
-
-        B, C, H, W = x.shape
-
-        # 1. Flatten spatial dimensions: (B * H * W, 384)
-        x_flat = x.permute(0, 2, 3, 1).reshape(-1, C)
-
-        # 2. Center & Project: (X - mean) @ V  --> (B * H * W, 64)
-        x_centered = x_flat - self.mean
-        x_proj = torch.matmul(x_centered, self.components)
-
-        # 3. Reshape back to image format: (B, 64, H, W)
-        x_reduced = (
-            x_proj.view(B, H, W, self.out_channels).permute(0, 3, 1, 2).contiguous()
-        )
-
-        return x_reduced
 
 
 def _points_to_bev(
@@ -254,10 +159,10 @@ def _points_to_bev(
 class DINO_BEV(nn.Module):
     def __init__(self, DINOv3_base: nn.Module, pca: nn.Module):
         super().__init__()
-        self.model = DINOv3_base
+        self.DINO = DINOv3_base
         self.pca = pca
         self._transform = make_transform()
-        self.model.requires_grad_(False)
+        self.DINO.requires_grad_(False)
 
     def forward(
         self,
@@ -290,9 +195,10 @@ class DINO_BEV(nn.Module):
             num_room = B // len(FACES)  # Should be divisible
             # (num_room*6)x(3x256x256) -> (num_room*6)x(dino_embed_dimx16x16)
 
-            model_out = extract_patch_grid(self.model, self._transform(scene))
+            model_out = extract_patch_grid(self.DINO, self._transform(scene))
 
             # PCA reduction on DINOv3 output
+            # TODO: other dimension reducer methods
             model_out = self.pca(model_out)
 
             # (num_room*6)x(64x16x16)
@@ -327,14 +233,15 @@ class DINO_BEV(nn.Module):
                     points_3D_features = feature_map[:, v_idx, u_idx].T  # permute(1, 0)
                     mask = masks[scene_idx][room_idx][face_idx]
 
-                    # TODO: aggregation method is meant to be an ablation
-                    # here we use average over num_mask for each point
-                    # however, we will test other approaches later
+                    # Aggregation method: average over num_mask for each point
+                    # TODO: ablation
+                    # - other methods for aggregation
 
                     feature_aggregation[mask] += points_3D_features
                     mask_norm += mask
 
-            # TODO: Multi-view fusion
+            # Multi-view fusion
+            # TODO: ablation
             # - add weighted mean (currently just mean)
             feature_aggregation /= mask_norm[:, None]
             feature_aggregation = F.normalize(feature_aggregation)
@@ -342,7 +249,7 @@ class DINO_BEV(nn.Module):
             batch_valid_mask.append(mask_norm)
             batch_pc_out.append(feature_aggregation)
 
-            # TODO: BEV cell feature pooling
+            # BEV cell feature pooling
             # - weighted mean of the features
             # - L2-normalize
             pb_out = _points_to_bev(
@@ -357,7 +264,6 @@ class DINO_BEV(nn.Module):
             batch_scene_cnt.append(scene_cnt)
             batch_scene_agree.append(scene_agree)
 
-        # batch_pc_out stores point + DINO features (num_point x 3+embed_dim)
         return (
             torch.stack(batch_scene_bev),
             torch.stack(batch_scene_mask),
@@ -415,7 +321,7 @@ class PCAWrapper(nn.Module):
     ):
         total_samples = 0
         collected_features = []
-        for batch in train_loader:
+        for _, batch in tqdm(enumerate(train_loader)):
             _, C, _, _ = batch.shape
             x_flat = batch.permute(0, 2, 3, 1).reshape(-1, C)  # .to(args.device)
             collected_features.append(x_flat)

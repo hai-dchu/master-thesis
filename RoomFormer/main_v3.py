@@ -14,12 +14,8 @@ from datasets import build_mixed_dataset as build_dataset
 from engine_v3 import evaluate, train_one_epoch
 from models import build_model_v3 as build_model
 from models.dino_bev import (
-    DINORoomFormer,
     extract_patch_grid,
     make_transform,
-)
-from models.dino_bev import (
-    build as build_dino_bev,
 )
 from torch.utils.data import DataLoader, Subset
 from util.poly_ops import pad_gt_polys
@@ -231,6 +227,13 @@ def get_args_parser():
         "--pca_outdim", default=64, help="PCA reduction dimension", type=int
     )
 
+    parser.add_argument(
+        "--lr_dino_multilayer_proj",
+        default=1e-3,
+        help="Learning rate for projection layer between DINO_BEV and ResNet output",
+        type=float,
+    )
+
     # For experimenting
     parser.add_argument(
         "--subset_length",
@@ -274,7 +277,6 @@ class DatasetWrapper(torch.utils.data.Dataset):
 
 
 def main(args):
-
     print(f"git:\n  {utils.get_sha()}\n")
 
     print(args)
@@ -294,14 +296,14 @@ def main(args):
     random.seed(seed)
 
     # build model
-    roomformer, criterion = build_model(args)
-    roomformer.to(device)
+    model, pca, criterion = build_model(args)
+    model.to(device)
 
-    dino_bev, pca = build_dino_bev(args)
-    dino_bev.to(device)
-    dino_bev.requires_grad_(False)
+    # dino_bev, pca = build_dino_bev(args)
+    # dino_bev.to(device)
+    # dino_bev.requires_grad_(False)
 
-    model = DINORoomFormer(roomformer, dino_bev).to(device)
+    # model = DINORoomFormer(model, dino_bev).to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of params:", n_parameters)
@@ -309,13 +311,17 @@ def main(args):
     # build dataset and dataloader
     dataset_train = build_dataset(image_set="train", args=args)
     dataset_val = build_dataset(image_set="val", args=args)
-    dataset_pca = DatasetWrapper(dataset_train, dino_bev.model, device)
+    dataset_pca = DatasetWrapper(
+        dataset_train, model.dino_multilayer.dino_bev.DINO, device
+    )
 
     if args.subset_length > 0:
         indices = range(args.subset_length)
         dataset_train = Subset(dataset_train, indices)
         dataset_val = Subset(dataset_val, indices)
-        dataset_pca = DatasetWrapper(dataset_train, dino_bev.model, device)
+        dataset_pca = DatasetWrapper(
+            dataset_train, model.dino_multilayer.dino_bev.DINO, device
+        )
 
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
@@ -329,7 +335,7 @@ def main(args):
         samples = [x["image"] for x in batch]
         gt_instances = [x["instances"] for x in batch]
         room_targets = pad_gt_polys(
-            gt_instances, roomformer.num_queries_per_poly, device="cpu"
+            gt_instances, model.num_queries_per_poly, device="cpu"
         )
 
         batched_room_faces = []  # [[x['cubes'][room] for room in x['cubes']] for x in batch]
@@ -428,7 +434,9 @@ def main(args):
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
-        print(f"{param_state} {n}")
+        print(
+            f"{param_state} {n}"
+        )
 
     param_dicts = [
         {
@@ -437,6 +445,7 @@ def main(args):
                 for n, p in model.named_parameters()
                 if not match_name_keywords(n, args.lr_backbone_names)
                 and not match_name_keywords(n, args.lr_linear_proj_names)
+                and not match_name_keywords(n, ["dino_multilayer.input_proj"])
                 and p.requires_grad
             ],
             "lr": args.lr,
@@ -456,6 +465,16 @@ def main(args):
                 if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad
             ],
             "lr": args.lr * args.lr_linear_proj_mult,
+        },
+        # higher learning rate for multilayer DINO_BEV wrapper (Conv2d + GroupNorm) to match ResNet multilayered output
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if match_name_keywords(n, ["dino_multilayer.input_proj"])
+                and p.requires_grad
+            ],
+            "lr": args.lr_dino_multilayer_proj,
         },
     ]
     if args.sgd:
