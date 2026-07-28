@@ -69,7 +69,7 @@ def _batch_to(batch, device="cpu"):
                 batched_prj_points[scene_idx][room_idx][face_idx] = batched_prj_points[
                     scene_idx
                 ][room_idx][face_idx].to(device, non_blocking=True)
-                
+
                 batched_masks[scene_idx][room_idx][face_idx] = batched_masks[scene_idx][
                     room_idx
                 ][face_idx].to(device, non_blocking=True)
@@ -330,10 +330,18 @@ def evaluate_floor(
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    for batched_inputs in data_loader:
-        samples = [x["image"].to(device) for x in batched_inputs]
-        scene_ids = [x["image_id"] for x in batched_inputs]
-        gt_instances = [x["instances"].to(device) for x in batched_inputs]
+    for batch in data_loader:
+        (
+            scene_ids,
+            samples,
+            gt_instances,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+        ) = batch
 
         # draw GT map
         if plot_gt:

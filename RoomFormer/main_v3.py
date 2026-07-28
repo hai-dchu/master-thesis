@@ -638,7 +638,7 @@ if __name__ == "__main__":
         "RoomFormer training script", parents=[get_args_parser()]
     )
     args = parser.parse_args()
-    now = datetime.datetime.now()
+    now = datetime.datetime.now()  # noqa: DTZ005
     run_id = now.strftime("%Y-%m-%d-%H-%M-%S")
     args.run_name = run_id + "_" + args.job_name
     args.output_dir = os.path.join(args.output_dir, args.run_name)
