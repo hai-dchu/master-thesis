@@ -297,6 +297,30 @@ def main(args):
 
     # build model
     model, pca, criterion = build_model(args)
+    
+    # Loading existing weights to the model
+    # TODO: DELETE THIS
+    # Since the projection layer from DINO_BEV to ResNet output is zero-initalized,
+    # the first training epoch should already sees some good result when the paper
+    # public weights is loaded, as there is no change in RoomFormer's architecture
+    # except for the added DINO_BEV projected output
+    old_weights = torch.load(
+        "/home/hai/master-thesis/RoomFormer/checkpoints/roomformer_stru3d.pth",
+        weights_only=False,
+    )
+    new_model_dict = model.state_dict()
+    filtered_weights = {}
+    for k, v in old_weights["model"].items():
+        if (
+            k in new_model_dict  # load transformer weights
+            # and "backbone.0" not in k # not load ResNet weights
+            and v.shape == new_model_dict[k].shape
+        ):
+            filtered_weights[k] = v
+
+    new_model_dict.update(filtered_weights)
+    model.load_state_dict(new_model_dict)
+
     model.to(device)
 
     # dino_bev, pca = build_dino_bev(args)
@@ -445,7 +469,7 @@ def main(args):
                 for n, p in model.named_parameters()
                 if not match_name_keywords(n, args.lr_backbone_names)
                 and not match_name_keywords(n, args.lr_linear_proj_names)
-                and not match_name_keywords(n, ["dino_multilayer.input_proj"])
+                and not match_name_keywords(n, ["dino_multilayer"])
                 and p.requires_grad
             ],
             "lr": args.lr,

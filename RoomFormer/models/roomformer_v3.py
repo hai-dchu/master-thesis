@@ -56,7 +56,7 @@ class DINOMultiLayeredAdapter(nn.Module):
         num_backbone_outs: int,
         in_channels: int,  # args.pca_outdim
         hidden_dim: int,
-        out_width: list[int], # 
+        out_width: list[int],
     ):
         super().__init__()
         self.dino_bev = dino_bev
@@ -87,14 +87,13 @@ class DINOMultiLayeredAdapter(nn.Module):
                 )
             )
             in_channels = hidden_dim
-        
+
         self.input_proj = nn.ModuleList(input_proj)
 
         for conv, _ in self.input_proj:
             nn.init.zeros_(conv.weight)
             if conv.bias is not None:
                 nn.init.zeros_(conv.bias)
-
 
     def forward(self, batch):
         (
@@ -108,7 +107,7 @@ class DINOMultiLayeredAdapter(nn.Module):
             batched_prj_points,
             batched_masks,
         ) = batch
-        batch_scene_bev, batch_scene_mask, batch_scene_cnt, batch_scene_agree = (
+        batch_scene_bev, _, _, _ = (
             self.dino_bev(
                 batched_room_faces,
                 batched_masks,
@@ -265,25 +264,25 @@ class RoomFormer(nn.Module):
             samples,
             _,
             _,
-            batched_room_faces,
-            batched_room_depths,
-            batched_point_clouds,
-            batched_prj_points,
-            batched_masks,
+            _,
+            _,
+            _,
+            _,
+            _,
         ) = batch
 
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
 
-        dino_feats_list = self.dino_multilayer(batch)
+        # dino_feats_list = self.dino_multilayer(batch)
 
         bs = samples.tensors.shape[0]
         srcs = []
         masks = []
         for idx, feat in enumerate(features):
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[idx](src) + dino_feats_list[idx])
+            srcs.append(self.input_proj[idx](src))
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
@@ -305,7 +304,7 @@ class RoomFormer(nn.Module):
         query_embeds = self.query_embed.weight
         tgt_embeds = self.tgt_embed.weight
 
-        hs, init_reference, inter_references, inter_classes = self.transformer(
+        hs, _, inter_references, inter_classes = self.transformer(
             srcs, masks, pos, query_embeds, tgt_embeds, self.attention_mask
         )
 
@@ -590,7 +589,7 @@ def build(args, train=True):
         num_backbone_outs=len(backbone.strides),
         in_channels=args.pca_outdim,
         hidden_dim=transformer.d_model,
-        out_width=[32, 16, 8, 4]
+        out_width=[32, 16, 8, 4],
     )
 
     model = RoomFormer(
