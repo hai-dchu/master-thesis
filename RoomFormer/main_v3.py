@@ -10,10 +10,17 @@ import numpy as np
 import torch
 import util.misc as utils
 import wandb
-from datasets import build_poly_dataset as build_dataset
-from engine import evaluate, train_one_epoch
-from models import build_model_v2 as build_model
-from torch.utils.data import DataLoader
+from datasets import build_mixed_dataset as build_dataset
+from engine_v3 import evaluate, train_one_epoch
+from models import build_model_v3 as build_model
+from models.dino_bev import (
+    extract_patch_grid,
+    make_transform,
+)
+from torch.utils.data import DataLoader, Subset
+from util.poly_ops import pad_gt_polys
+
+FACES = sorted(["U", "F", "R", "L", "B", "D"])
 
 
 def get_args_parser():
@@ -24,13 +31,16 @@ def get_args_parser():
     )
     parser.add_argument("--lr_backbone", default=2e-5, type=float)
     parser.add_argument(
-        "--lr_linear_proj_names", default=["sampling_offsets"], type=str, nargs="+"
+        "--lr_linear_proj_names",
+        default=["reference_points", "sampling_offsets"],
+        type=str,
+        nargs="+",
     )
     parser.add_argument("--lr_linear_proj_mult", default=0.1, type=float)
     parser.add_argument("--batch_size", default=10, type=int)
     parser.add_argument("--weight_decay", default=1e-4, type=float)
     parser.add_argument("--epochs", default=500, type=int)
-    parser.add_argument("--lr_drop", default=[400], type=list)
+    parser.add_argument("--lr_drop", default=[400], type=int, nargs="+")
     parser.add_argument(
         "--clip_max_norm", default=0.1, type=float, help="gradient clipping max norm"
     )
@@ -175,7 +185,7 @@ def get_args_parser():
 
     # dataset parameters
     parser.add_argument("--dataset_name", default="stru3d")
-    parser.add_argument("--dataset_root", default="data/stru3d", type=str)
+    parser.add_argument("--dataset_root", default="data/stru3d_processed", type=str)
 
     parser.add_argument(
         "--output_dir",
@@ -210,13 +220,64 @@ def get_args_parser():
         help="number of last layers to be extracted from dinov3 backbone",
         type=int,
     )
+    parser.add_argument(
+        "--dinov3_model", default="dinov3_vits16", help="dinov3 exact model name"
+    )
+    parser.add_argument(
+        "--pca_outdim", default=64, help="PCA reduction dimension", type=int
+    )
+
+    parser.add_argument(
+        "--lr_dino_multilayer_proj",
+        default=1e-3,
+        help="Learning rate for projection layer between DINO_BEV and ResNet output",
+        type=float,
+    )
+
+    # For experimenting
+    parser.add_argument(
+        "--subset_length",
+        default=-1,
+        help="If subset_length > 0, train on subset_length samples instead of the full dataset",
+        type=int,
+    )
 
     return parser
 
 
-def main(args):
+class DatasetWrapper(torch.utils.data.Dataset):
+    def __init__(
+        self, parent: torch.utils.data.Dataset, dino: torch.nn.Module, device: str
+    ):
+        super().__init__()
+        self.parent = parent
+        self.model = dino
+        self.device = device
+        self.transform = make_transform()
 
-    print("git:\n  {}\n".format(utils.get_sha()))
+    def __len__(self):
+        return len(self.parent)
+
+    def __getitem__(self, idx):
+        sample = self.parent.__getitem__(idx)
+        rooms = sample["cubes"].keys()
+
+        room_faces = []
+        for room in rooms:
+            for face in FACES:
+                room_faces.append(
+                    torch.moveaxis(sample["cubes"][room][face], -1, 0).to(self.device)
+                )
+
+        room_faces = torch.stack(room_faces)
+        patches = extract_patch_grid(
+            self.model, self.transform(room_faces)
+        )  # .repeat(1, 1, 16, 16)
+        return patches
+
+
+def main(args):
+    print(f"git:\n  {utils.get_sha()}\n")
 
     print(args)
 
@@ -235,8 +296,14 @@ def main(args):
     random.seed(seed)
 
     # build model
-    model, criterion = build_model(args)
+    model, pca, criterion = build_model(args)
     model.to(device)
+
+    # dino_bev, pca = build_dino_bev(args)
+    # dino_bev.to(device)
+    # dino_bev.requires_grad_(False)
+
+    # model = DINORoomFormer(model, dino_bev).to(device)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of params:", n_parameters)
@@ -244,24 +311,99 @@ def main(args):
     # build dataset and dataloader
     dataset_train = build_dataset(image_set="train", args=args)
     dataset_val = build_dataset(image_set="val", args=args)
+    dataset_pca = DatasetWrapper(
+        dataset_train, model.dino_multilayer.dino_bev.DINO, device
+    )
+
+    if args.subset_length > 0:
+        indices = range(args.subset_length)
+        dataset_train = Subset(dataset_train, indices)
+        dataset_val = Subset(dataset_val, indices)
+        dataset_pca = DatasetWrapper(
+            dataset_train, model.dino_multilayer.dino_bev.DINO, device
+        )
 
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    sampler_pca = torch.utils.data.RandomSampler(dataset_pca)
 
-    def trivial_batch_collator(batch):
+    def batch_collator(batch):
         """
-        A batch collator that does nothing.
+        A batch collator that does something.
         """
-        return batch
+        scene_ids = [x["image_id"] for x in batch]
+        samples = [x["image"] for x in batch]
+        gt_instances = [x["instances"] for x in batch]
+        room_targets = pad_gt_polys(
+            gt_instances, model.num_queries_per_poly, device="cpu"
+        )
+
+        batched_room_faces = []  # [[x['cubes'][room] for room in x['cubes']] for x in batch]
+        batched_room_depths = []
+        batched_point_clouds = []
+        batched_prj_points = []
+        batched_masks = []
+
+        for x in batch:
+            rooms = sorted(x["cubes"].keys())
+            tmp_cube = []
+            tmp_depth = []
+            tmp_prj_points = []
+            tmp_masks = []
+            for room in rooms:
+                room_face = []
+                room_depth = []
+                room_prj_points = []
+                room_mask = []
+                for face in FACES:
+                    room_face.append(torch.moveaxis(x["cubes"][room][face], -1, 0))
+                    room_depth.append(torch.moveaxis(x["depths"][room][face], -1, 0))
+                    room_prj_points.append(x["project_points"][room][face])
+                    room_mask.append(x["masks"][room][face])
+                tmp_cube.append(torch.stack(room_face))
+                tmp_depth.append(torch.stack(room_depth))
+                tmp_prj_points.append(room_prj_points)
+                tmp_masks.append(room_mask)
+
+            batched_room_faces.append(
+                torch.flatten(torch.stack(tmp_cube), start_dim=0, end_dim=1)
+            )
+            batched_room_depths.append(
+                torch.flatten(torch.stack(tmp_depth), start_dim=0, end_dim=1)
+            )
+            batched_prj_points.append(tmp_prj_points)
+            batched_masks.append(tmp_masks)
+            batched_point_clouds.append(x["point_cloud"])
+
+        return (
+            scene_ids,
+            samples,
+            gt_instances,
+            room_targets,
+            batched_room_faces,
+            batched_room_depths,
+            batched_point_clouds,
+            batched_prj_points,
+            batched_masks,
+        )
+
+    def pca_batch_collator(batch):
+        """
+        batch collator for pca dedicated dataloader
+        """
+        return torch.cat(batch, dim=0)
 
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.batch_size, drop_last=True
+    )
+    batch_sampler_pca = torch.utils.data.BatchSampler(
+        sampler_pca, args.batch_size, drop_last=True
     )
 
     data_loader_train = DataLoader(
         dataset_train,
         batch_sampler=batch_sampler_train,
-        collate_fn=trivial_batch_collator,
+        collate_fn=batch_collator,
         num_workers=args.num_workers,
         pin_memory=True,
     )
@@ -270,10 +412,17 @@ def main(args):
         args.batch_size,
         sampler=sampler_val,
         drop_last=False,
-        collate_fn=trivial_batch_collator,
+        collate_fn=batch_collator,
         num_workers=args.num_workers,
         pin_memory=True,
     )
+
+    data_loader_pca = DataLoader(
+        dataset_pca, batch_sampler=batch_sampler_pca, collate_fn=pca_batch_collator
+    )
+
+    print("Fitting PCA")
+    pca.fit(data_loader_pca)
 
     def match_name_keywords(n, name_keywords):
         out = False
@@ -285,7 +434,9 @@ def main(args):
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
-        print(f"{param_state} {n}")
+        print(
+            f"{param_state} {n}"
+        )
 
     param_dicts = [
         {
@@ -294,7 +445,7 @@ def main(args):
                 for n, p in model.named_parameters()
                 if not match_name_keywords(n, args.lr_backbone_names)
                 and not match_name_keywords(n, args.lr_linear_proj_names)
-                and not match_name_keywords(n, ["dinov3_feature_extractor"])
+                and not match_name_keywords(n, ["dino_multilayer.input_proj"])
                 and p.requires_grad
             ],
             "lr": args.lr,
@@ -314,6 +465,16 @@ def main(args):
                 if match_name_keywords(n, args.lr_linear_proj_names) and p.requires_grad
             ],
             "lr": args.lr * args.lr_linear_proj_mult,
+        },
+        # higher learning rate for multilayer DINO_BEV wrapper (Conv2d + GroupNorm) to match ResNet multilayered output
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if match_name_keywords(n, ["dino_multilayer.input_proj"])
+                and p.requires_grad
+            ],
+            "lr": args.lr_dino_multilayer_proj,
         },
     ]
     if args.sgd:
@@ -336,12 +497,12 @@ def main(args):
         unexpected_keys = [
             k
             for k in unexpected_keys
-            if not (k.endswith("total_params") or k.endswith("total_ops"))
+            if not (k.endswith(("total_params", "total_ops")))
         ]
         if len(missing_keys) > 0:
-            print("Missing Keys: {}".format(missing_keys))
+            print(f"Missing Keys: {missing_keys}")
         if len(unexpected_keys) > 0:
-            print("Unexpected Keys: {}".format(unexpected_keys))
+            print(f"Unexpected Keys: {unexpected_keys}")
         if (
             "optimizer" in checkpoint
             and "lr_scheduler" in checkpoint
@@ -363,9 +524,9 @@ def main(args):
                     "Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler."
                 )
                 lr_scheduler.step_size = args.lr_drop
-                lr_scheduler.base_lrs = list(
-                    map(lambda group: group["initial_lr"], optimizer.param_groups)
-                )
+                lr_scheduler.base_lrs = [
+                    group["initial_lr"] for group in optimizer.param_groups
+                ]
             lr_scheduler.step(lr_scheduler.last_epoch)
             args.start_epoch = checkpoint["epoch"] + 1
         # check the resumed model
@@ -469,7 +630,7 @@ def main(args):
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print("Training time {}".format(total_time_str))
+    print(f"Training time {total_time_str}")
 
 
 if __name__ == "__main__":

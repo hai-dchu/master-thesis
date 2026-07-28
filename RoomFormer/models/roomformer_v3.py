@@ -1,22 +1,27 @@
 # Modified from Deformable DETR
 # Yuanwen Yue
 
+# Modified from RoomFormer
+# Hai Chu
+
+import copy
+import math
+import os
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torch import nn
-import math
-
-from torchvision.transforms import v2
 from util.misc import (
     NestedTensor,
     nested_tensor_from_tensor_list,
 )  # , interpolate, inverse_sigmoid
 
-from .backbone import build_backbone
-from .matcher import build_matcher
-from .losses import custom_L1_loss, MaskRasterizationLoss
+from .backbone_v3 import build_backbone
 from .deformable_transformer import build_deformable_transformer
-import copy
+from .dino_bev import build as build_dino_bev
+from .losses import MaskRasterizationLoss, custom_L1_loss
+from .matcher import build_matcher
 
 
 def _get_clones(module, N):
@@ -24,20 +29,95 @@ def _get_clones(module, N):
 
 
 # Modification starts here
-# What changed: added dino features (dinov3.get_intermediate_layers()[-1]) to ResNet backbone output in RoomFormer
+# What changed: Use DINOv3 to process 6 faces of each room
+# to ResNet backbone output in RoomFormer
 #
 # Hai Chu
 
 
-def make_transform(resize_size: int = 256):
-    to_tensor = v2.ToImage()
-    resize = v2.Resize((resize_size, resize_size), antialias=True)
-    to_float = v2.ToDtype(torch.float32, scale=True)
-    normalize = v2.Normalize(
-        mean=(0.485, 0.456, 0.406),
-        std=(0.229, 0.224, 0.225),
-    )
-    return v2.Compose([to_tensor, resize, to_float, normalize])
+# Or call DINO_BEV first, stack the output on top of the input
+# image, and change ResNet input channels to accommodate for
+# the new input channels (1 + pca_outdim)
+#
+# Which mean for the first version, RoomFormer architecture is
+# kept intact, and the only changes are in backbone.py
+#
+# Well this didn't work so guess I will go back to the last todo
+
+# TODO: Change RoomFormer input to include the required inputs
+# for DINO_BEV module.
+
+
+class DINOMultiLayeredAdapter(nn.Module):
+    def __init__(
+        self,
+        dino_bev: nn.Module,
+        num_feature_levels: int,
+        num_backbone_outs: int,
+        in_channels: int,  # args.pca_outdim
+        hidden_dim: int,
+        out_width: list[int], # 
+    ):
+        super().__init__()
+        self.dino_bev = dino_bev
+        patch_size = [hidden_dim // x for x in out_width]  # should be 32, 16, 8, 4
+        input_proj = []
+        for i in range(num_backbone_outs):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+        for i in range(num_backbone_outs, num_feature_levels):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+            in_channels = hidden_dim
+        
+        self.input_proj = nn.ModuleList(input_proj)
+
+        for conv, _ in self.input_proj:
+            nn.init.zeros_(conv.weight)
+            if conv.bias is not None:
+                nn.init.zeros_(conv.bias)
+
+
+    def forward(self, batch):
+        (
+            _,
+            _,
+            _,
+            _,
+            batched_room_faces,
+            _,
+            batched_point_clouds,
+            batched_prj_points,
+            batched_masks,
+        ) = batch
+        batch_scene_bev, batch_scene_mask, batch_scene_cnt, batch_scene_agree = (
+            self.dino_bev(
+                batched_room_faces,
+                batched_masks,
+                batched_point_clouds,
+                batched_prj_points,
+            )
+        )
+        out = [layer(batch_scene_bev) for layer in self.input_proj]
+        return out
 
 
 class RoomFormer(nn.Module):
@@ -46,14 +126,12 @@ class RoomFormer(nn.Module):
     def __init__(
         self,
         backbone,
+        dino_multilayer,
         transformer,
         num_classes,
         num_queries,
         num_polys,
         num_feature_levels,
-        dinov3_repo,
-        dinov3_checkpoint,
-        dinov3_n_last_layers=1,
         aux_loss=True,
         with_poly_refine=False,
         masked_attn=False,
@@ -165,26 +243,10 @@ class RoomFormer(nn.Module):
         else:
             self.attention_mask = None
 
-        # Initialize DINOv3 feature extractor
-        self.dinov3 = torch.hub.load(
-            dinov3_repo,
-            "dinov3_vits16",
-            source="local",
-            weights=dinov3_checkpoint,
-        )
-        dino_embed_dims = {
-            "dinov3_vits16": 384,
-            "dinov3_vitb16": 768,
-            "dinov3_vitl16": 1024,
-        }
-        dino_in_channels = dino_embed_dims["dinov3_vits16"]
-        self.dino_proj = nn.Conv2d(
-            dino_in_channels, self.transformer.d_model, kernel_size=1
-        )
-        self.transform = make_transform()
-        self.dinov3_n_last_layers = dinov3_n_last_layers
+        # DINO_BEV
+        self.dino_multilayer = dino_multilayer
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, batch):
         """The forward expects a NestedTensor, which consists of:
            - samples.tensors: batched images, of shape [batch_size x C x H x W]
            - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -198,27 +260,30 @@ class RoomFormer(nn.Module):
            - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                             dictionnaries containing the two above keys for each decoder layer.
         """
+        (
+            _,
+            samples,
+            _,
+            _,
+            batched_room_faces,
+            batched_room_depths,
+            batched_point_clouds,
+            batched_prj_points,
+            batched_masks,
+        ) = batch
+
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
 
-        # Feature extractor with DINOv3
-        transformed_input = self.transform(samples.tensors)
-        dino_inter = self.dinov3.get_intermediate_layers(
-            transformed_input, n=self.dinov3_n_last_layers, reshape=True, norm=True
-        )[-1]  # Get last feature from DINOv3 feature map
-               # batch_sizexdino_in_channelsx16x16
-        dino_features = self.dino_proj(dino_inter) # batch_sizextransformer_d_modelx16x16
+        dino_feats_list = self.dino_multilayer(batch)
 
         bs = samples.tensors.shape[0]
         srcs = []
         masks = []
         for idx, feat in enumerate(features):
             src, mask = feat.decompose()
-            src_proj = self.input_proj[idx](src)
-            if src_proj.shape[-2:] == dino_features.shape[-2:]:
-                src_proj = src_proj + dino_features
-            srcs.append(src_proj)
+            srcs.append(self.input_proj[idx](src) + dino_feats_list[idx])
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
@@ -486,29 +551,85 @@ class MLP(nn.Module):
         return x
 
 
+def _load_pretrained_weights(
+    model: nn.Module, old_weights_path: str | Path, freeze: bool = True
+) -> nn.Module:
+    """
+    Load trained model's weights for the parts from the original model
+    """
+    assert os.path.exists(old_weights_path)
+    model_dict = model.state_dict()
+
+    old_weights = torch.load(old_weights_path, weights_only=False)
+    filtered_weights = {}
+    for k, v in old_weights["model"].items():
+        if k in model_dict and v.shape == model_dict[k].shape:
+            filtered_weights[k] = v
+
+    model_dict.update(filtered_weights)
+    model.load_state_dict(model_dict)
+
+    if freeze:
+        for name, param in model.named_parameters():
+            if name in filtered_weights:
+                param.requires_grad_(False)
+            else:
+                param.requires_grad_(True)
+    return model
+
+
 def build(args, train=True):
     num_classes = 1  # valid or invalid corner
 
     backbone = build_backbone(args)
     transformer = build_deformable_transformer(args)
+    dino_bev, pca = build_dino_bev(args)
+    dino_multilayer = DINOMultiLayeredAdapter(
+        dino_bev,
+        num_feature_levels=args.num_feature_levels,
+        num_backbone_outs=len(backbone.strides),
+        in_channels=args.pca_outdim,
+        hidden_dim=transformer.d_model,
+        out_width=[32, 16, 8, 4]
+    )
+
     model = RoomFormer(
         backbone,
+        dino_multilayer,
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
         num_polys=args.num_polys,
         num_feature_levels=args.num_feature_levels,
-        dinov3_repo=args.dinov3_repo,
-        dinov3_checkpoint=args.dinov3_checkpoint,
-        dinov3_n_last_layers=args.dinov3_n_last_layers,
         aux_loss=args.aux_loss,
         with_poly_refine=args.with_poly_refine,
         masked_attn=args.masked_attn,
         semantic_classes=args.semantic_classes,
     )
 
+    # old_weights = torch.load(
+    #     "/home/hai/master-thesis/RoomFormer/checkpoints/roomformer_stru3d.pth",
+    #     weights_only=False,
+    # )
+    # new_model_dict = model.state_dict()
+    # filtered_weights = {}
+    # for k, v in old_weights["model"].items():
+    #     if (
+    #         k in new_model_dict # load transformer weights
+    #         # and "backbone" not in k # not load ResNet weights
+    #         and v.shape == new_model_dict[k].shape
+    #     ):
+    #         filtered_weights[k] = v
+
+    # new_model_dict.update(filtered_weights)
+    # model.load_state_dict(new_model_dict)
+
     if not train:
         return model
+
+    # for k, v in new_model_dict.items():
+    #     if k not in old_weights['model']:
+    #         v.requires_grad_(True)
 
     device = torch.device(args.device)
     matcher = build_matcher(args)
@@ -538,4 +659,4 @@ def build(args, train=True):
     )
     criterion.to(device)
 
-    return model, criterion
+    return model, pca, criterion

@@ -11,7 +11,7 @@ import wandb
 import torch
 from torch.utils.data import DataLoader
 import util.misc as utils
-from datasets import build_dataset
+from datasets import build_poly_dataset as build_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model_v0 as build_model
 

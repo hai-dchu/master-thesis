@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import util.misc as utils
-from datasets import build_dataset
+from datasets import build_poly_dataset as build_dataset
 from engine import evaluate_floor
 from models import build_model_v2 as build_model
 from torch.utils.data import DataLoader

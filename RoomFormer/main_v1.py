@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import util.misc as utils
 import wandb
-from datasets import build_dataset
+from datasets import build_poly_dataset as build_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model_v1 as build_model
 from torch.utils.data import DataLoader
