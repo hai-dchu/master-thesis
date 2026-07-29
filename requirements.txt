@@ -24,3 +24,9 @@ shapely
 tqdm
 pycocotools
 descartes
+
+# DINO_BEV RF requirements
+open3d
+plyfile
+py360convert
+cuda-toolkit
