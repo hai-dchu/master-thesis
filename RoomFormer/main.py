@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import wandb
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import util.misc as utils
 from datasets import build_poly_dataset as build_dataset
 from engine import evaluate, train_one_epoch
@@ -111,6 +111,14 @@ def get_args_parser():
 
     parser.add_argument('--wandb', default=False, action='store_true', help='if added, initiate remote logging')
 
+    # For experimenting
+    parser.add_argument(
+        "--subset_length",
+        default=-1,
+        help="If subset_length > 0, train on subset_length samples instead of the full dataset",
+        type=int,
+    )
+
     return parser
 
 
@@ -144,6 +152,11 @@ def main(args):
     # build dataset and dataloader
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+
+    if args.subset_length > 0:
+        indices = range(args.subset_length)
+        dataset_train = Subset(dataset_train, indices)
+        dataset_val = Subset(dataset_val, indices)
 
 
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
@@ -304,9 +317,10 @@ def main(args):
 
         if 'room_iou' in test_stats:
             val_log_dict["val_metrics/room_iou"] = test_stats['room_iou']
-                
-        wandb.log(train_log_dict)
-        wandb.log(val_log_dict)
+
+        if args.wandb:
+            wandb.log(train_log_dict)
+            wandb.log(val_log_dict)
 
         if args.output_dir:
             with (output_dir / "log.txt").open("a") as f:
