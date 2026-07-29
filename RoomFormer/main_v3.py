@@ -423,6 +423,7 @@ def main(args):
 
     print("Fitting PCA")
     pca.fit(data_loader_pca)
+    pca.to(device)
 
     def match_name_keywords(n, name_keywords):
         out = False
@@ -434,9 +435,7 @@ def main(args):
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
-        print(
-            f"{param_state} {n}"
-        )
+        print(f"{param_state} {n}")
 
     param_dicts = [
         {
@@ -446,6 +445,7 @@ def main(args):
                 if not match_name_keywords(n, args.lr_backbone_names)
                 and not match_name_keywords(n, args.lr_linear_proj_names)
                 and not match_name_keywords(n, ["dino_multilayer.input_proj"])
+                and not match_name_keywords(n, ["dino_scales"])
                 and p.requires_grad
             ],
             "lr": args.lr,
@@ -471,7 +471,7 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["dino_multilayer.input_proj"])
+                if match_name_keywords(n, ["dino_multilayer.input_proj", "dino_scales"])
                 and p.requires_grad
             ],
             "lr": args.lr_dino_multilayer_proj,
