@@ -331,8 +331,11 @@ class PCAWrapper(nn.Module):
         collected_features = (
             torch.cat(collected_features, dim=0)[: self.max_samples].cpu().numpy()
         )
-        self.pca = PCA(n_components=self.out_channels).fit(collected_features)
+        pca = PCA(n_components=self.out_channels).fit(collected_features)
         self.is_fitted = True
+
+        self.register_buffer("components", torch.from_numpy(pca.components_).float())
+        self.register_buffer("mean", torch.from_numpy(pca.mean_).float())
 
     def forward(self, x):
         if not self.is_fitted:
@@ -341,16 +344,11 @@ class PCAWrapper(nn.Module):
             )
 
         B, C, H, W = x.shape
-        device = x.device
-        x_flat = x.permute(0, 2, 3, 1).reshape(-1, C).cpu().numpy()
-        x_out = self.pca.transform(x_flat)
-        x_out = (
-            torch.from_numpy(x_out)
-            .view(B, H, W, self.out_channels)
-            .permute(0, 3, 1, 2)
-            .contiguous()
-            .to(device)
-        )
+        # device = x.device
+        x_flat = x.permute(0, 2, 3, 1).reshape(-1, C)  # .cpu().numpy()
+        x_centered = x_flat - self.mean
+        x_out = torch.matmul(x_centered, self.components.T)
+        x_out = x_out.view(B, H, W, self.out_channels).permute(0, 3, 1, 2).contiguous()
         return x_out
 
 

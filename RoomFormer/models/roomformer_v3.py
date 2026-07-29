@@ -56,7 +56,7 @@ class DINOMultiLayeredAdapter(nn.Module):
         num_backbone_outs: int,
         in_channels: int,  # args.pca_outdim
         hidden_dim: int,
-        out_width: list[int], # 
+        out_width: list[int],
     ):
         super().__init__()
         self.dino_bev = dino_bev
@@ -87,14 +87,13 @@ class DINOMultiLayeredAdapter(nn.Module):
                 )
             )
             in_channels = hidden_dim
-        
+
         self.input_proj = nn.ModuleList(input_proj)
 
         for conv, _ in self.input_proj:
-            nn.init.zeros_(conv.weight)
+            nn.init.xavier_uniform_(conv.weight, gain=1.0)
             if conv.bias is not None:
-                nn.init.zeros_(conv.bias)
-
+                nn.init.constant_(conv.bias, 0)
 
     def forward(self, batch):
         (
@@ -245,6 +244,9 @@ class RoomFormer(nn.Module):
 
         # DINO_BEV
         self.dino_multilayer = dino_multilayer
+        self.dino_scales = nn.ParameterList(
+            [nn.Parameter(torch.zeros(1)) for _ in range(num_feature_levels)]
+        )
 
     def forward(self, batch):
         """The forward expects a NestedTensor, which consists of:
@@ -283,7 +285,7 @@ class RoomFormer(nn.Module):
         masks = []
         for idx, feat in enumerate(features):
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[idx](src) + dino_feats_list[idx])
+            srcs.append(self.input_proj[idx](src))
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
@@ -301,6 +303,10 @@ class RoomFormer(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
+
+        for idx in range(len(srcs)):
+            print(f"scale for dino_multilayer[{idx}]: {self.dino_scales[idx].item()}")
+            srcs[idx] += self.dino_scales[idx] * dino_feats_list[idx]
 
         query_embeds = self.query_embed.weight
         tgt_embeds = self.tgt_embed.weight
@@ -590,7 +596,7 @@ def build(args, train=True):
         num_backbone_outs=len(backbone.strides),
         in_channels=args.pca_outdim,
         hidden_dim=transformer.d_model,
-        out_width=[32, 16, 8, 4]
+        out_width=[32, 16, 8, 4],
     )
 
     model = RoomFormer(
