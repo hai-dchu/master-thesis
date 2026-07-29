@@ -91,7 +91,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         masks = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -107,7 +107,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         faces = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -124,7 +124,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         depths = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -141,7 +141,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         points = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
