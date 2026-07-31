@@ -69,7 +69,7 @@ def main(args):
     #         | rgb_coldlight.png
     #         | depth.png
     #       | camera_xyz.txt
-    scenes = ["scene_00400"] + os.listdir(data_root)
+    scenes = os.listdir(data_root)
     for scene in tqdm(sorted(scenes)):
         try:
             if args.verbose:

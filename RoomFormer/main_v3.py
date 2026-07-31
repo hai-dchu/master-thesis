@@ -223,6 +223,8 @@ def get_args_parser():
     parser.add_argument(
         "--dinov3_model", default="dinov3_vits16", help="dinov3 exact model name"
     )
+
+    # dino-bev
     parser.add_argument(
         "--pca_outdim", default=64, help="PCA reduction dimension", type=int
     )
@@ -232,6 +234,12 @@ def get_args_parser():
         default=1e-3,
         help="Learning rate for projection layer between DINO_BEV and ResNet output",
         type=float,
+    )
+
+    parser.add_argument(
+        "--dino_bev_aggregation",
+        default="average",
+        help="aggregation strategy for multiple features 3D points",
     )
 
     # For experimenting
@@ -471,7 +479,7 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["dino_multilayer.input_proj", "dino_scales"])
+                if match_name_keywords(n, ["dino_multilayer.input_proj"])
                 and p.requires_grad
             ],
             "lr": args.lr_dino_multilayer_proj,

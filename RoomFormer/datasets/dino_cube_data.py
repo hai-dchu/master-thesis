@@ -91,7 +91,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         masks = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -107,7 +107,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         faces = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -124,7 +124,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         depths = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -141,7 +141,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         points = {}
-        for room in rooms:
+        for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
@@ -243,19 +243,19 @@ class ConvertToCocoDict:
 def make_poly_transforms(image_set):
 
     if image_set == "train":
-        return None
-        # return T.AugmentationList(
-        #     [
-        #         T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-        #         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-        #         T.RandomRotation(
-        #             [0.0, 90.0, 180.0, 270.0],
-        #             expand=False,
-        #             center=None,
-        #             sample_style="choice",
-        #         ),
-        #     ]
-        # )
+        # return None
+        return T.AugmentationList(
+            [
+                T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+                T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+                T.RandomRotation(
+                    [0.0, 90.0, 180.0, 270.0],
+                    expand=False,
+                    center=None,
+                    sample_style="choice",
+                ),
+            ]
+        )
 
     if image_set == "val" or image_set == "test":
         return None
