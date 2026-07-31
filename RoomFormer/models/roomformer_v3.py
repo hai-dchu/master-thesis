@@ -244,9 +244,9 @@ class RoomFormer(nn.Module):
 
         # DINO_BEV
         self.dino_multilayer = dino_multilayer
-        self.dino_scales = nn.ParameterList(
-            [nn.Parameter(torch.zeros(1)) for _ in range(num_feature_levels)]
-        )
+        # self.dino_scales = nn.ParameterList(
+        #     [nn.Parameter(torch.zeros(1)) for _ in range(num_feature_levels)]
+        # )
 
     def forward(self, batch):
         """The forward expects a NestedTensor, which consists of:
@@ -305,8 +305,8 @@ class RoomFormer(nn.Module):
                 pos.append(pos_l)
 
         for idx in range(len(srcs)):
-            print(f"scale for dino_multilayer[{idx}]: {self.dino_scales[idx].item()}")
-            srcs[idx] += self.dino_scales[idx] * dino_feats_list[idx]
+            # print(f"scale for dino_multilayer[{idx}]: {self.dino_scales[idx].item()}")
+            srcs[idx] += dino_feats_list[idx]
 
         query_embeds = self.query_embed.weight
         tgt_embeds = self.tgt_embed.weight

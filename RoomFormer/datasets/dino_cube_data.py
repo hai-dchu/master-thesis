@@ -243,19 +243,19 @@ class ConvertToCocoDict:
 def make_poly_transforms(image_set):
 
     if image_set == "train":
-        return None
-        # return T.AugmentationList(
-        #     [
-        #         T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-        #         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-        #         T.RandomRotation(
-        #             [0.0, 90.0, 180.0, 270.0],
-        #             expand=False,
-        #             center=None,
-        #             sample_style="choice",
-        #         ),
-        #     ]
-        # )
+        # return None
+        return T.AugmentationList(
+            [
+                T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+                T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+                T.RandomRotation(
+                    [0.0, 90.0, 180.0, 270.0],
+                    expand=False,
+                    center=None,
+                    sample_style="choice",
+                ),
+            ]
+        )
 
     if image_set == "val" or image_set == "test":
         return None

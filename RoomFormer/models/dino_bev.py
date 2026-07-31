@@ -157,12 +157,20 @@ def _points_to_bev(
 
 
 class DINO_BEV(nn.Module):
-    def __init__(self, DINOv3_base: nn.Module, pca: nn.Module):
+    def __init__(
+        self, DINOv3_base: nn.Module, pca: nn.Module, aggregation: str = "average"
+    ):
+        assert aggregation in ["average", "random"], (
+            "aggregation method should be one of (average, random), default average"
+        )
+
         super().__init__()
         self.DINO = DINOv3_base
         self.pca = pca
         self._transform = make_transform()
         self.DINO.requires_grad_(False)
+
+        self.aggregation = aggregation
 
     def forward(
         self,
@@ -215,6 +223,9 @@ class DINO_BEV(nn.Module):
             # mask_norm stores the number of scenes in which a point appear
             mask_norm = torch.ones([num_3D_points], device=device)
 
+            # check if the 3D point appear in any scene
+            check_appear = torch.zeros([num_3D_points], dtype=bool, device=device)
+
             room_prj_points = project_points[scene_idx]
             for room_idx, room in enumerate(room_prj_points):
                 for face_idx in range(len(FACES)):
@@ -230,20 +241,41 @@ class DINO_BEV(nn.Module):
                         .squeeze()
                     )
                     feature_map = F.normalize(feature_map)
-                    points_3D_features = feature_map[:, v_idx, u_idx].T  # permute(1, 0)
                     mask = masks[scene_idx][room_idx][face_idx]
+                    check_appear |= mask
+                    points_3D_features = feature_map[:, v_idx, u_idx].T  # permute(1, 0)
 
                     # Aggregation method: average over num_mask for each point
                     # TODO: ablation
                     # - other methods for aggregation
+                    if self.aggregation == "average":
+                        feature_aggregation[mask] += points_3D_features
+                        mask_norm += mask
+                    elif self.aggregation == "random":
+                        # 50% chance of switching feature to simulate random feature selection
+                        # for points that appear in multiple faces
 
-                    feature_aggregation[mask] += points_3D_features
-                    mask_norm += mask
+                        # first-seen points get the current features while other points randomly decide if they get the current features
+                        flag = (torch.randn(check_appear[mask].shape) > 0.5).to(device)
+                        flag = (
+                            flag * check_appear[mask]
+                            + torch.ones_like(flag, device=device) * ~check_appear[mask]
+                        )[:, None]
+
+                        feature_aggregation[mask] = (
+                            feature_aggregation[mask] * ~flag
+                            + points_3D_features * flag
+                        )
 
             # Multi-view fusion
             # TODO: ablation
             # - add weighted mean (currently just mean)
-            feature_aggregation /= mask_norm[:, None]
+            if self.aggregation == "average":
+                feature_aggregation /= mask_norm[:, None]
+            elif self.aggregation == "random":
+                # No need to average over count appearance
+                pass
+
             feature_aggregation = F.normalize(feature_aggregation)
 
             batch_valid_mask.append(mask_norm)
@@ -366,6 +398,6 @@ def build(args, train=True):
         device=args.device,
     )
     pca = PCAWrapper(out_channels=args.pca_outdim)
-    model = DINO_BEV(DINOv3, pca)
+    model = DINO_BEV(DINOv3, pca, aggregation=args.dino_bev_aggregation)
 
     return model, pca
