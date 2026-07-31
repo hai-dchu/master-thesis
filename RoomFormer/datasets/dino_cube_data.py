@@ -89,9 +89,15 @@ class CubePolyDataset(torch.utils.data.Dataset):
             np.stack([vertex["red"], vertex["green"], vertex["blue"]], axis=-1)
         )
 
-        return xyz, colors
+        # sample every 100th point
+        # TODO: change this into a hyperparameter
+        idxs = [i for i in range(0, len(xyz), 100)]
+        xyz = xyz[idxs]
+        colors = colors[idxs]
 
-    def _load_masks(self, scene_id: str):
+        return xyz, colors, idxs
+
+    def _load_masks(self, scene_id: str, idxs: list[int]):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         masks = {}
@@ -102,7 +108,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
             tmp = {}
             for face in FACES:
                 tmp[face] = torch.from_numpy(
-                    np.load(os.path.join(path, f"mask_{face}.npy"))
+                    np.load(os.path.join(path, f"mask_{face}.npy"))[idxs]
                 )
             masks[room] = tmp
         return masks
@@ -159,6 +165,32 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         return points
 
+    def _load_mask_prj_points(self, scene_id: str, idxs: list[int]):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        rooms = os.listdir(os.path.join(self.data_root, scene_id))
+        masks = {}
+        points = {}
+        for room in sorted(rooms):
+            path = os.path.join(self.data_root, scene_id, room)
+            if not os.path.isdir(path):
+                continue
+            tmp_masks = {}
+            tmp_points = {}
+            for face in FACES:
+                # tmp_mask[face]
+                mask = torch.from_numpy(np.load(os.path.join(path, f"mask_{face}.npy")))
+                old_mask = torch.where(mask > 0)
+                plh = torch.zeros_like(mask)
+                plh[idxs] = 1
+                keep_points = plh[old_mask]
+                tmp_masks[face] = mask[idxs]
+                tmp_points[face] = torch.from_numpy(
+                    np.load(os.path.join(path, f"prj_points_{face}.npy"))
+                )[keep_points]
+            masks[room] = tmp_masks
+            points[room] = tmp_points
+        return points, masks
+
     def __getitem__(self, index):
         """
         Each item return consists of:
@@ -180,12 +212,15 @@ class CubePolyDataset(torch.utils.data.Dataset):
         record = self.prepare(img_id, path, target)
 
         scene_id = self.scene_ids[index]
-        record["masks"] = self._load_masks(scene_id)
+        point_cloud, _, idxs = self._load_point_cloud(scene_id)
+        record["point_cloud"] = point_cloud
+        # record["masks"] = self._load_masks(scene_id, idxs)
+        # record["project_points"] = self._load_prj_points(scene_id)
+        prj_points, masks = self._load_mask_prj_points(scene_id, idxs)
+        record["project_points"] = prj_points
+        record["masks"] = masks
         record["cubes"] = self._load_cubes(scene_id)
         record["depths"] = self._load_depths(scene_id)
-        point_cloud, _ = self._load_point_cloud(scene_id)
-        record["point_cloud"] = point_cloud
-        record["project_points"] = self._load_prj_points(scene_id)
 
         return record
 
