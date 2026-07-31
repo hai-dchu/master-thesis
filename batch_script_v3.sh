@@ -29,7 +29,7 @@ export PYTHONUSERBASE="/projappl/project_2019895/master-thesis/environments/"
 
 # Run after running tykky
 cd RoomFormer
-python main_v2.py --dataset_name=stru3d \
+python main_v3.py --dataset_name=stru3d \
                --dataset_root=data/stru3d_processed \
                --num_queries=800 \
                --num_polys=20 \
