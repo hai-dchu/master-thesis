@@ -52,7 +52,6 @@ class CubePolyDataset(torch.utils.data.Dataset):
         self.mode = mode
         self.data_dir = os.path.abspath(data_dir)
         self.data_root = os.path.join(self.data_dir, mode)
-        self.scene_ids = sorted(os.listdir(self.data_root))
 
         self.aug_rotate = aug_rotate
         self.aug_flip = aug_flip
@@ -64,6 +63,11 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         self._transforms = transforms
         self.prepare = ConvertToCocoDict(self.data_root, self._transforms)
+
+        # TODO: Fix dataset installation, since the current dataset (stru3d_processed) has missing scenes
+        self.scene_ids = [
+            self.coco.imgs[i]["file_name"].split("/")[0] for i in self.coco.imgs.keys()
+        ]  # sorted(os.listdir(self.data_root))
 
     def __len__(self):
         return len(self.scene_ids)
@@ -192,7 +196,6 @@ class ConvertToCocoDict:
         self.augmentations = augmentations
 
     def __call__(self, img_id, path, target):
-
         file_name = os.path.join(self.root, path)
 
         img = np.array(Image.open(file_name))
@@ -241,7 +244,6 @@ class ConvertToCocoDict:
 
 
 def make_poly_transforms(image_set):
-
     if image_set == "train":
         # return None
         return T.AugmentationList(
