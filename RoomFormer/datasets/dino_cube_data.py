@@ -91,7 +91,7 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         # sample every 100th point
         # TODO: change this into a hyperparameter
-        idxs = [i for i in range(0, len(xyz), 100)]
+        idxs = [i for i in range(0, len(xyz), 1)]
         xyz = xyz[idxs]
         colors = colors[idxs]
 
@@ -191,6 +191,31 @@ class CubePolyDataset(torch.utils.data.Dataset):
             points[room] = tmp_points
         return points, masks
 
+    def _point_cloud_augmentation(
+        self,
+        point_cloud: torch.Tensor,
+        horizontal: bool = False,
+        vertical: bool = False,
+        rotate: float = 0.0,
+    ):
+        if horizontal:
+            point_cloud[:, 0] = -point_cloud[:, 0]
+        if vertical:
+            point_cloud[:, 1] = -point_cloud[:, 1]
+        if rotate > 0:
+            # rotate in deg
+            rad = rotate / 180.0 * np.pi
+            c, s = np.cos(rad), np.sin(rad)
+            rot = torch.Tensor([[c, -s, 0], [s, c, 0], [0, 0, 1]]) # maybe not this?
+
+            # The point cloud is centered around camera center
+            point_cloud = torch.mm(point_cloud, rot.T)
+            
+            # suppress floating point errors
+            point_cloud[point_cloud.abs() < 1e-12] = 0 
+
+        return point_cloud
+
     def __getitem__(self, index):
         """
         Each item return consists of:
@@ -209,11 +234,19 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         path = coco.loadImgs(img_id)[0]["file_name"]
 
-        record = self.prepare(img_id, path, target)
+        # get random rotations and flip
+        _hor = np.random.randn() > 0.5
+        _ver = np.random.randn() > 0.5
+        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0])
+        record = self.prepare(
+            img_id, path, target, horizontal=_hor, vertical=_ver, rotate=_rotate
+        )
 
         scene_id = self.scene_ids[index]
         point_cloud, _, idxs = self._load_point_cloud(scene_id)
-        record["point_cloud"] = point_cloud
+        record["point_cloud"] = self._point_cloud_augmentation(
+            point_cloud, horizontal=_hor, vertical=_ver, rotate=_rotate
+        )
         # record["masks"] = self._load_masks(scene_id, idxs)
         # record["project_points"] = self._load_prj_points(scene_id)
         prj_points, masks = self._load_mask_prj_points(scene_id, idxs)
@@ -226,11 +259,23 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
 
 class ConvertToCocoDict:
-    def __init__(self, root, augmentations):
+    def __init__(
+        self,
+        root,
+        augmentations,
+    ):
         self.root = root
         self.augmentations = augmentations
 
-    def __call__(self, img_id, path, target):
+    def __call__(
+        self,
+        img_id,
+        path,
+        target,
+        horizontal: bool = False,
+        vertical: bool = False,
+        rotate: float = 0,
+    ):
         file_name = os.path.join(self.root, path)
 
         img = np.array(Image.open(file_name))
@@ -256,7 +301,14 @@ class ConvertToCocoDict:
             )
         else:
             aug_input = T.AugInput(img)
-            transforms = self.augmentations(aug_input)
+            aug_list = self.augmentations(
+                w,
+                h,
+                horizontal=horizontal,
+                vertical=vertical,
+                rotate=rotate,
+            )
+            transforms = aug_list(aug_input)
             image = aug_input.image
             record["image"] = (1 / 255) * torch.as_tensor(
                 np.array(np.expand_dims(image, 0))
@@ -278,21 +330,55 @@ class ConvertToCocoDict:
         return record
 
 
+# TODO: Replace the whole transform pipeline to also rotate and flip the point cloud
+# So the idea is to record the set of transformation returned from AugmentationList
+# which include several booleans and angles:
+# - horizontal flip
+# - vertical flip
+# - rotation (0, 90, 180, 270)
+
+
+def _random_transform_wrapper(
+    img_width: int = 256,
+    img_height: int = 256,
+    horizontal: bool = False,
+    vertical: bool = False,
+    rotate: float = 0,
+):
+    hor = T.NoOpTransform()
+    ver = T.NoOpTransform()
+    rot = T.NoOpTransform()
+
+    if horizontal:
+        hor = T.HFlipTransform(img_width)
+
+    if vertical:
+        hor = T.VFlipTransform(img_height)
+
+    if rotate > 0:
+        rot = T.RotationTransform(
+            img_width, img_height, rotate, expand=False, center=None
+        )
+
+    return T.AugmentationList([hor, ver, rot])
+
+
 def make_poly_transforms(image_set):
     if image_set == "train":
         # return None
-        return T.AugmentationList(
-            [
-                T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-                T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-                T.RandomRotation(
-                    [0.0, 90.0, 180.0, 270.0],
-                    expand=False,
-                    center=None,
-                    sample_style="choice",
-                ),
-            ]
-        )
+        # return T.AugmentationList(
+        #     [
+        #         T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+        #         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+        #         T.RandomRotation(
+        #             [0.0, 90.0, 180.0, 270.0],
+        #             expand=False,
+        #             center=None,
+        #             sample_style="choice",
+        #         ),
+        #     ]
+        # )
+        return _random_transform_wrapper
 
     if image_set == "val" or image_set == "test":
         return None
