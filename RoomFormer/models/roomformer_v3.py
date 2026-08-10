@@ -34,18 +34,11 @@ def _get_clones(module, N):
 #
 # Hai Chu
 
-
-# Or call DINO_BEV first, stack the output on top of the input
-# image, and change ResNet input channels to accommodate for
-# the new input channels (1 + pca_outdim)
-#
-# Which mean for the first version, RoomFormer architecture is
-# kept intact, and the only changes are in backbone.py
-#
-# Well this didn't work so guess I will go back to the last todo
-
-# TODO: Change RoomFormer input to include the required inputs
+# Change RoomFormer input to include the required inputs
 # for DINO_BEV module.
+
+# TODO: Change DINOMultiLayeredAdapter to take precalculated
+# DINO_BEV output as input
 
 
 class DINOMultiLayeredAdapter(nn.Module):
@@ -91,9 +84,9 @@ class DINOMultiLayeredAdapter(nn.Module):
         self.input_proj = nn.ModuleList(input_proj)
 
         for conv, _ in self.input_proj:
-            nn.init.xavier_uniform_(conv.weight, gain=1.0)
+            nn.init.zeros_(conv.weight)
             if conv.bias is not None:
-                nn.init.constant_(conv.bias, 0)
+                nn.init.zeros_(conv.bias)
 
     def forward(self, batch):
         (
@@ -115,6 +108,67 @@ class DINOMultiLayeredAdapter(nn.Module):
                 batched_prj_points,
             )
         )
+        out = [layer(batch_scene_bev) for layer in self.input_proj]
+        return out
+
+
+class DINOMultiLayeredWrapper(nn.Module):
+    def __init__(
+        self,
+        num_feature_levels: int,
+        num_backbone_outs: int,
+        in_channels: int,  # args.pca_outdim
+        hidden_dim: int,
+        out_width: list[int],
+    ):
+        super().__init__()
+        patch_size = [hidden_dim // x for x in out_width]  # should be 32, 16, 8, 4
+        input_proj = []
+        for i in range(num_backbone_outs):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+        for i in range(num_backbone_outs, num_feature_levels):
+            input_proj.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=patch_size[i],
+                        stride=patch_size[i],
+                    ),
+                    nn.GroupNorm(32, hidden_dim),
+                )
+            )
+            in_channels = hidden_dim
+
+        self.input_proj = nn.ModuleList(input_proj)
+
+        for conv, _ in self.input_proj:
+            nn.init.zeros_(conv.weight)
+            if conv.bias is not None:
+                nn.init.zeros_(conv.bias)
+
+    def forward(self, batch):
+        (
+            _,
+            _,
+            _,
+            _,
+            batch_scene_bev,
+            _,
+            _,
+            _,
+        ) = batch
+
         out = [layer(batch_scene_bev) for layer in self.input_proj]
         return out
 
@@ -262,16 +316,26 @@ class RoomFormer(nn.Module):
            - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                             dictionnaries containing the two above keys for each decoder layer.
         """
+        # (
+        #     _,
+        #     samples,
+        #     _,
+        #     _,
+        #     batched_room_faces,
+        #     batched_room_depths,
+        #     batched_point_clouds,
+        #     batched_prj_points,
+        #     batched_masks,
+        # ) = batch
         (
-            _,
+            scene_ids,
             samples,
-            _,
-            _,
-            batched_room_faces,
-            batched_room_depths,
-            batched_point_clouds,
-            batched_prj_points,
-            batched_masks,
+            gt_instances,
+            room_targets,
+            batched_scene_bevs,
+            batched_scene_masks,
+            batched_scene_cnts,
+            batched_scene_agrees,
         ) = batch
 
         if not isinstance(samples, NestedTensor):
@@ -589,12 +653,19 @@ def build(args, train=True):
 
     backbone = build_backbone(args)
     transformer = build_deformable_transformer(args)
-    dino_bev, pca = build_dino_bev(args)
-    dino_multilayer = DINOMultiLayeredAdapter(
-        dino_bev,
+    _, pca = build_dino_bev(args)
+    # dino_multilayer = DINOMultiLayeredAdapter(
+    #     dino_bev,
+    #     num_feature_levels=args.num_feature_levels,
+    #     num_backbone_outs=len(backbone.strides),
+    #     in_channels=args.pca_outdim * 2,
+    #     hidden_dim=transformer.d_model,
+    #     out_width=[32, 16, 8, 4],
+    # )
+    dino_multilayer = DINOMultiLayeredWrapper(
         num_feature_levels=args.num_feature_levels,
         num_backbone_outs=len(backbone.strides),
-        in_channels=args.pca_outdim,
+        in_channels=args.pca_outdim * 2,
         hidden_dim=transformer.d_model,
         out_width=[32, 16, 8, 4],
     )

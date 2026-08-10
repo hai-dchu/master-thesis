@@ -81,6 +81,7 @@ def _points_to_bev(
     point_agreement: torch.Tensor,  # [N] multi-view agreement score (in [0, 1])
     width: int = 256,
     height: int = 256,
+    num_height_bins: int = 4,
 ) -> dict[str, Tensor]:
     """
     Implements Point-to-BEV pooling exactly aligned with RoomFormer's generate_density.
@@ -89,6 +90,7 @@ def _points_to_bev(
     _, embed_dim = point_features.shape
 
     xy = scene_pc[:, :2]  # [N, 2] -> (x, y)
+    z = scene_pc[:, 2]
 
     min_coords = xy.min(dim=0).values
     max_coords = xy.max(dim=0).values
@@ -108,18 +110,29 @@ def _points_to_bev(
     gx = coords[:, 0].to(torch.long)
     gy = coords[:, 1].to(torch.long)
 
+    # Compute height bin index [0, num_height_bins - 1] for each point
+    min_z, max_z = z.min(), z.max()
+    z_range = (max_z - min_z).clamp_min(1e-6)
+    z_bin = (
+        torch.floor((z - min_z) / z_range * num_height_bins)
+        .to(torch.long)
+        .clamp(0, num_height_bins - 1)
+    )
+
     # Keep points with positive no. of appearance
     valid_keep = point_mask & torch.isfinite(point_features).all(dim=1)
 
     # Keep valid coordinates, features, agreed 3D points
     gx_valid = gx[valid_keep]
     gy_valid = gy[valid_keep]
+    z_bin_valid = z_bin[valid_keep]
     feats_valid = F.normalize(point_features[valid_keep].float(), dim=-1)
     agreed_valid = point_agreement[valid_keep].float().clamp(0.0, 1.0)
 
     # Map (gy, gx) to flat cell index to match density[y, x] indexing
-    flat_indices = gy_valid * width + gx_valid
-    num_cells = height * width
+    num_cells_per_bin = height * width
+    flat_indices = z_bin_valid * num_cells_per_bin + gy_valid * width + gx_valid
+    num_cells = num_height_bins * num_cells_per_bin
 
     # Flatten the DINO-BEV output, DINO mask, DINO log_count to a [256*256, embed_dim]
     sum_f = torch.zeros((num_cells, embed_dim), dtype=torch.float32, device=device)
@@ -138,21 +151,44 @@ def _points_to_bev(
     mean_f = torch.zeros_like(sum_f)
     mean_f[occupied] = sum_f[occupied] / count[occupied, None]
     mean_f[occupied] = F.normalize(mean_f[occupied], dim=-1)
+    mean_f = mean_f.reshape(num_height_bins, height, width, embed_dim).permute(
+        0, 3, 1, 2
+    )
 
     mean_a = torch.zeros_like(sum_a)
     mean_a[occupied] = sum_a[occupied] / count[occupied]
 
     # Reshape to spatial rasters [C, H, W]
-    dino_bev_feature = mean_f.T.reshape(embed_dim, height, width)
-    dino_mask = occupied.reshape(1, height, width).float()
-    dino_log_count = torch.log1p(count).reshape(1, height, width)
-    dino_agreement = mean_a.reshape(1, height, width)
+    dino_bev_feature = mean_f.reshape(num_height_bins * embed_dim, height, width)
+    dino_mask = occupied.reshape(num_height_bins, height, width).float()
+    dino_log_count = torch.log1p(count).reshape(num_height_bins, height, width)
+    dino_agreement = mean_a.reshape(num_height_bins, height, width)
+
+    # Approach #1
+    dino_bev_feature = torch.cat(
+        [dino_bev_feature[0:embed_dim], dino_bev_feature[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_mask = torch.cat(
+        [dino_mask[0:embed_dim], dino_mask[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_log_count = torch.cat(
+        [dino_log_count[0:embed_dim], dino_log_count[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_agreement = torch.cat(
+        [dino_agreement[0:embed_dim], dino_agreement[-embed_dim - 1 : -1]], axis=0
+    )
+
+    # # Approach #2
+    # dino_bev_feature = dino_bev_feature[embed_dim:-embed_dim]
+    # dino_mask = dino_mask[embed_dim:-embed_dim]
+    # dino_log_count = dino_log_count[embed_dim:-embed_dim]
+    # dino_agreement = dino_agreement[embed_dim:-embed_dim]
 
     return {
-        "dino_bev": dino_bev_feature,  # [C_R, 256, 256]
-        "dino_mask": dino_mask,  # [1, 256, 256]
-        "dino_count": dino_log_count,  # [1, 256, 256]
-        "dino_agreement": dino_agreement,  # [1, 256, 256]
+        "dino_bev": dino_bev_feature,  # [num_height_bins * C_R, 256, 256]
+        "dino_mask": dino_mask,  # [num_height_bins, 256, 256]
+        "dino_count": dino_log_count,  # [num_height_bins, 256, 256]
+        "dino_agreement": dino_agreement,  # [num_height_bins, 256, 256]
     }
 
 
@@ -345,6 +381,8 @@ class PCAWrapper(nn.Module):
         self.out_channels = out_channels
         self.max_samples = max_samples
         self.is_fitted = False
+        self.register_buffer('components', None)
+        self.register_buffer('mean', None)
 
     @torch.no_grad()
     def fit(

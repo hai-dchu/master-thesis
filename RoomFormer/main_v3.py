@@ -229,6 +229,8 @@ def get_args_parser():
         "--pca_outdim", default=64, help="PCA reduction dimension", type=int
     )
 
+    parser.add_argument("--pca", default="checkpoints/pca.pth")
+
     parser.add_argument(
         "--lr_dino_multilayer_proj",
         default=1e-3,
@@ -248,6 +250,13 @@ def get_args_parser():
         default=-1,
         help="If subset_length > 0, train on subset_length samples instead of the full dataset",
         type=int,
+    )
+
+    parser.add_argument(
+        "--DINO_BEV",
+        default=False,
+        action="store_true",
+        help="Include if DINO_BEV output is precalculated",
     )
 
     return parser
@@ -284,56 +293,13 @@ class DatasetWrapper(torch.utils.data.Dataset):
         return patches
 
 
-def main(args):
-    print(f"git:\n  {utils.get_sha()}\n")
+def build_batch_collator(args, mode="model", num_queries_per_poly=None):
+    if mode == "model":
+        assert num_queries_per_poly is not None
 
-    print(args)
-
-    # setup wandb for logging
-    if args.wandb:
-        utils.setup_wandb()
-        wandb.init(project="RoomFormer")
-        wandb.run.name = args.run_name
-
-    device = torch.device(args.device)
-
-    # fix the seed for reproducibility
-    seed = args.seed
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-    # build model
-    model, pca, criterion = build_model(args)
-    model.to(device)
-
-    # dino_bev, pca = build_dino_bev(args)
-    # dino_bev.to(device)
-    # dino_bev.requires_grad_(False)
-
-    # model = DINORoomFormer(model, dino_bev).to(device)
-
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("number of params:", n_parameters)
-
-    # build dataset and dataloader
-    dataset_train = build_dataset(image_set="train", args=args)
-    dataset_val = build_dataset(image_set="val", args=args)
-    dataset_pca = DatasetWrapper(
-        dataset_train, model.dino_multilayer.dino_bev.DINO, device
+    assert not (mode == "pca" and args.DINO_BEV), (
+        "if args.DINO_BEV is included (i.e. DINO_BEV output is precalculated, then it is redundant to have pca_batch_collator)"
     )
-
-    if args.subset_length > 0:
-        indices = range(args.subset_length)
-        dataset_train = Subset(dataset_train, indices)
-        dataset_val = Subset(dataset_val, indices)
-        dataset_pca = DatasetWrapper(
-            dataset_train, model.dino_multilayer.dino_bev.DINO, device
-        )
-
-    sampler_train = torch.utils.data.RandomSampler(dataset_train)
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-    sampler_pca = torch.utils.data.RandomSampler(dataset_pca)
 
     def batch_collator(batch):
         """
@@ -342,9 +308,7 @@ def main(args):
         scene_ids = [x["image_id"] for x in batch]
         samples = [x["image"] for x in batch]
         gt_instances = [x["instances"] for x in batch]
-        room_targets = pad_gt_polys(
-            gt_instances, model.num_queries_per_poly, device="cpu"
-        )
+        room_targets = pad_gt_polys(gt_instances, num_queries_per_poly, device="cpu")
 
         batched_room_faces = []  # [[x['cubes'][room] for room in x['cubes']] for x in batch]
         batched_room_depths = []
@@ -395,17 +359,95 @@ def main(args):
             batched_masks,
         )
 
+    def DINO_BEV_bc(batch):
+        """
+        A batch collator that does something.
+        """
+        scene_ids = [x["image_id"] for x in batch]
+        samples = [x["image"] for x in batch]
+        gt_instances = [x["instances"] for x in batch]
+        room_targets = pad_gt_polys(gt_instances, num_queries_per_poly, device="cpu")
+
+        batched_scene_bevs = torch.stack([x["bev"] for x in batch])
+        batched_scene_masks = torch.stack([x["mask"] for x in batch])
+        batched_scene_cnts = torch.stack([x["cnt"] for x in batch])
+        batched_scene_agrees = torch.stack([x["agree"] for x in batch])
+
+        return (
+            scene_ids,
+            samples,
+            gt_instances,
+            room_targets,
+            batched_scene_bevs,
+            batched_scene_masks,
+            batched_scene_cnts,
+            batched_scene_agrees,
+        )
+
     def pca_batch_collator(batch):
         """
         batch collator for pca dedicated dataloader
         """
         return torch.cat(batch, dim=0)
 
+    if mode == "model":
+        if args.DINO_BEV:
+            return DINO_BEV_bc
+        return batch_collator
+    else:
+        return pca_batch_collator
+
+
+def main(args):
+    print(f"git:\n  {utils.get_sha()}\n")
+
+    print(args)
+
+    # setup wandb for logging
+    if args.wandb:
+        utils.setup_wandb()
+        wandb.init(project="RoomFormer")
+        wandb.run.name = args.run_name
+
+    device = torch.device(args.device)
+
+    # fix the seed for reproducibility
+    seed = args.seed
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    # build model
+    model, pca, criterion = build_model(args)
+    model.to(device)
+
+    # dino_bev, pca = build_dino_bev(args)
+    # dino_bev.to(device)
+    # dino_bev.requires_grad_(False)
+
+    # model = DINORoomFormer(model, dino_bev).to(device)
+
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("number of params:", n_parameters)
+
+    # build dataset and dataloader
+    dataset_train = build_dataset(image_set="train", args=args)
+    dataset_val = build_dataset(image_set="val", args=args)
+
+    if args.subset_length > 0:
+        indices = range(args.subset_length)
+        dataset_train = Subset(dataset_train, indices)
+        dataset_val = Subset(dataset_val, indices)
+
+    sampler_train = torch.utils.data.RandomSampler(dataset_train)
+    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.batch_size, drop_last=True
     )
-    batch_sampler_pca = torch.utils.data.BatchSampler(
-        sampler_pca, args.batch_size, drop_last=True
+
+    batch_collator = build_batch_collator(
+        args, mode="model", num_queries_per_poly=model.num_queries_per_poly
     )
 
     data_loader_train = DataLoader(
@@ -425,13 +467,28 @@ def main(args):
         pin_memory=True,
     )
 
-    data_loader_pca = DataLoader(
-        dataset_pca, batch_sampler=batch_sampler_pca, collate_fn=pca_batch_collator
-    )
+    if not args.DINO_BEV:
+        pca_batch_collator = build_batch_collator(mode="pca")
+        dataset_pca = DatasetWrapper(
+            dataset_train, model.dino_multilayer.dino_bev.DINO, device
+        )
+        sampler_pca = torch.utils.data.RandomSampler(dataset_pca)
+        batch_sampler_pca = torch.utils.data.BatchSampler(
+            sampler_pca, args.batch_size, drop_last=True
+        )
+        data_loader_pca = DataLoader(
+            dataset_pca, batch_sampler=batch_sampler_pca, collate_fn=pca_batch_collator
+        )
 
-    print("Fitting PCA")
-    pca.fit(data_loader_pca)
-    pca.to(device)
+        print("Fitting PCA")
+        pca.fit(data_loader_pca)
+        # torch.save(pca.state_dict(), args.pca)
+        pca.to(device)
+    else:
+        state = torch.load(args.pca)
+        pca.components = state["components"]
+        pca.mean = state["mean"]
+        pca.is_fitted = True
 
     def match_name_keywords(n, name_keywords):
         out = False
