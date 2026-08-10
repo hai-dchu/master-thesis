@@ -164,6 +164,26 @@ def _points_to_bev(
     dino_log_count = torch.log1p(count).reshape(num_height_bins, height, width)
     dino_agreement = mean_a.reshape(num_height_bins, height, width)
 
+    # Approach #1
+    dino_bev_feature = torch.cat(
+        [dino_bev_feature[0:embed_dim], dino_bev_feature[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_mask = torch.cat(
+        [dino_mask[0:embed_dim], dino_mask[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_log_count = torch.cat(
+        [dino_log_count[0:embed_dim], dino_log_count[-embed_dim - 1 : -1]], axis=0
+    )
+    dino_agreement = torch.cat(
+        [dino_agreement[0:embed_dim], dino_agreement[-embed_dim - 1 : -1]], axis=0
+    )
+
+    # # Approach #2
+    # dino_bev_feature = dino_bev_feature[embed_dim:-embed_dim]
+    # dino_mask = dino_mask[embed_dim:-embed_dim]
+    # dino_log_count = dino_log_count[embed_dim:-embed_dim]
+    # dino_agreement = dino_agreement[embed_dim:-embed_dim]
+
     return {
         "dino_bev": dino_bev_feature,  # [num_height_bins * C_R, 256, 256]
         "dino_mask": dino_mask,  # [num_height_bins, 256, 256]
@@ -361,6 +381,8 @@ class PCAWrapper(nn.Module):
         self.out_channels = out_channels
         self.max_samples = max_samples
         self.is_fitted = False
+        self.register_buffer('components', None)
+        self.register_buffer('mean', None)
 
     @torch.no_grad()
     def fit(
