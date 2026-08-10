@@ -87,6 +87,46 @@ def _batch_to(batch, device="cpu"):
     )
 
 
+def _alt_batch_to(batch, device="cpu"):
+    (
+        scene_ids,
+        samples,
+        gt_instances,
+        room_targets,
+        batched_scene_bevs,
+        batched_scene_masks,
+        batched_scene_cnts,
+        batched_scene_agrees,
+    ) = batch
+
+    samples = [s.to(device, non_blocking=True) for s in samples]
+    gt_instances = [s.to(device) for s in gt_instances]
+    room_targets = [
+        {
+            "coords": t["coords"].to(device, non_blocking=True),
+            "labels": t["labels"].to(device, non_blocking=True),
+            "lengths": t["lengths"].to(device, non_blocking=True),
+            "room_labels": t["room_labels"].to(device, non_blocking=True),
+        }
+        for t in room_targets
+    ]
+    batched_scene_bevs = batched_scene_bevs.to(device)
+    batched_scene_masks = batched_scene_masks.to(device)
+    batched_scene_cnts = batched_scene_cnts.to(device)
+    batched_scene_agrees = batched_scene_agrees.to(device)
+
+    return (
+        scene_ids,
+        samples,
+        gt_instances,
+        room_targets,
+        batched_scene_bevs,
+        batched_scene_masks,
+        batched_scene_cnts,
+        batched_scene_agrees,
+    )
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -107,13 +147,12 @@ def train_one_epoch(
     print_freq = 10
 
     for batched_inputs in metric_logger.log_every(data_loader, print_freq, header):
-        batch = _batch_to(batched_inputs, device)
+        batch = _alt_batch_to(batched_inputs, device)
         (
             _,
             _,
             _,
             room_targets,
-            _,
             _,
             _,
             _,
@@ -167,13 +206,12 @@ def evaluate(model, criterion, dataset_name, data_loader, device):
     header = "Test:"
 
     for batched_inputs in metric_logger.log_every(data_loader, 10, header):
-        batch = _batch_to(batched_inputs, device)
+        batch = _alt_batch_to(batched_inputs, device)
         (
             scene_ids,
             _,
             gt_instances,
             room_targets,
-            _,
             _,
             _,
             _,

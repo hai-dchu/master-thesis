@@ -206,13 +206,13 @@ class CubePolyDataset(torch.utils.data.Dataset):
             # rotate in deg
             rad = rotate / 180.0 * np.pi
             c, s = np.cos(rad), np.sin(rad)
-            rot = torch.Tensor([[c, -s, 0], [s, c, 0], [0, 0, 1]]) # maybe not this?
+            rot = torch.Tensor([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
             # The point cloud is centered around camera center
             point_cloud = torch.mm(point_cloud, rot.T)
-            
+
             # suppress floating point errors
-            point_cloud[point_cloud.abs() < 1e-12] = 0 
+            point_cloud[point_cloud.abs() < 1e-12] = 0
 
         return point_cloud
 
@@ -330,7 +330,7 @@ class ConvertToCocoDict:
         return record
 
 
-# TODO: Replace the whole transform pipeline to also rotate and flip the point cloud
+# Replace the whole transform pipeline to also rotate and flip the point cloud
 # So the idea is to record the set of transformation returned from AugmentationList
 # which include several booleans and angles:
 # - horizontal flip
@@ -386,6 +386,96 @@ def make_poly_transforms(image_set):
     raise ValueError(f"unknown {image_set}")
 
 
+class CubePolyWrapper(CubePolyDataset):
+    """
+    Override __getitem__ method to load precalculate DINO_BEV output
+    instead of calling DINO_BEV everytime the model is called
+
+    While I know I can override function with dataset.__getitem__ = new_function,
+    I don't think that is the way to go, i.e. just a preference
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        transforms,
+        aug_rotate: bool = False,
+        aug_flip: bool = False,
+        semantic_classes: int = -1,
+        mode="train",
+    ):
+        CubePolyDataset.__init__(
+            self,
+            data_dir,
+            transforms,
+            aug_rotate,
+            aug_flip,
+            semantic_classes,
+            mode,
+        )
+
+    def _get_precalculated_DINO_BEV(self, scene_id):
+        assert scene_id in self.scene_ids, "scene_id not found"
+        scene = os.path.join(self.data_root, scene_id)
+        scene_bev = torch.load(os.path.join(scene, "scene_bev.pt"), map_location="cpu")
+        scene_mask = torch.load(
+            os.path.join(scene, "scene_mask.pt"), map_location="cpu"
+        )
+        scene_cnt = torch.load(os.path.join(scene, "scene_cnt.pt"), map_location="cpu")
+        scene_agree = torch.load(
+            os.path.join(scene, "scene_agree.pt"), map_location="cpu"
+        )
+
+        return scene_bev, scene_mask, scene_cnt, scene_agree
+
+    def _bev_augmentation(
+        self,
+        bev: torch.Tensor,
+        horizontal: bool = False,
+        vertical: bool = False,
+        rotate: float = 0.0,
+    ):
+        if horizontal:
+            bev[:, 0] = -bev[:, 0]
+        if vertical:
+            bev[:, 1] = -bev[:, 1]
+        if rotate > 0:
+            bev = torch.rot90(bev, k=int(rotate // 90), dims=(1, 2))
+
+        return bev
+
+    def __getitem__(self, index):
+        coco = self.coco
+        img_id = self.ids[index]
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        target = coco.loadAnns(ann_ids)
+
+        if self.semantic_classes == -1:
+            target = [t for t in target if t["category_id"] not in [16, 17]]
+
+        path = coco.loadImgs(img_id)[0]["file_name"]
+
+        # get random rotations and flip
+        _hor = np.random.randn() > 0.5
+        _ver = np.random.randn() > 0.5
+        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0])
+        record = self.prepare(
+            img_id, path, target, horizontal=_hor, vertical=_ver, rotate=_rotate
+        )
+
+        scene_id = self.scene_ids[index]
+        # changes start here
+        scene_bev, scene_mask, scene_cnt, scene_agree = (
+            self._get_precalculated_DINO_BEV(scene_id)
+        )
+        record["bev"] = self._bev_augmentation(scene_bev, _hor, _ver, _rotate)
+        record["mask"] = scene_mask
+        record["cnt"] = scene_cnt
+        record["agree"] = scene_agree
+
+        return record
+
+
 def build(mode, args):
     assert os.path.exists(os.path.abspath(args.dataset_root)), (
         f"{args.dataset_root} does not exist"
@@ -400,5 +490,14 @@ def build(mode, args):
         semantic_classes=args.semantic_classes,
         mode=mode,
     )
+    if args.DINO_BEV:
+        dataset = CubePolyWrapper(
+            dataset_root,
+            transforms=make_poly_transforms(mode),
+            aug_rotate=False,
+            aug_flip=False,
+            semantic_classes=args.semantic_classes,
+            mode=mode,
+        )
 
     return dataset
