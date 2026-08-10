@@ -91,9 +91,9 @@ class DINOMultiLayeredAdapter(nn.Module):
         self.input_proj = nn.ModuleList(input_proj)
 
         for conv, _ in self.input_proj:
-            nn.init.xavier_uniform_(conv.weight, gain=1.0)
+            nn.init.zeros_(conv.weight)
             if conv.bias is not None:
-                nn.init.constant_(conv.bias, 0)
+                nn.init.zeros_(conv.bias)
 
     def forward(self, batch):
         (
@@ -594,7 +594,7 @@ def build(args, train=True):
         dino_bev,
         num_feature_levels=args.num_feature_levels,
         num_backbone_outs=len(backbone.strides),
-        in_channels=args.pca_outdim,
+        in_channels=args.pca_outdim * 2,
         hidden_dim=transformer.d_model,
         out_width=[32, 16, 8, 4],
     )
