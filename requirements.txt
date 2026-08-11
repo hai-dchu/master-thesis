@@ -6,6 +6,7 @@ submitit
 termcolor
 # torch
 torchmetrics
+plyfile
 #torchvision
 
 # RoomFormer requirements
@@ -24,3 +25,9 @@ shapely
 tqdm
 pycocotools
 descartes
+
+# LitePT requirements
+einops
+psutils
+addict
+colorhash
