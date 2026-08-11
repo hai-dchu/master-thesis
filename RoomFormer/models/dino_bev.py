@@ -169,13 +169,13 @@ def _points_to_bev(
         [dino_bev_feature[0:embed_dim], dino_bev_feature[-embed_dim - 1 : -1]], axis=0
     )
     dino_mask = torch.cat(
-        [dino_mask[0:embed_dim], dino_mask[-embed_dim - 1 : -1]], axis=0
-    )
+        [dino_mask[0, None], dino_mask[-1, None]], axis=0
+    )  # corresponding first and last mask
     dino_log_count = torch.cat(
-        [dino_log_count[0:embed_dim], dino_log_count[-embed_dim - 1 : -1]], axis=0
+        [dino_log_count[0, None], dino_log_count[-1, None]], axis=0
     )
     dino_agreement = torch.cat(
-        [dino_agreement[0:embed_dim], dino_agreement[-embed_dim - 1 : -1]], axis=0
+        [dino_agreement[0, None], dino_agreement[-1, None]], axis=0
     )
 
     # # Approach #2
