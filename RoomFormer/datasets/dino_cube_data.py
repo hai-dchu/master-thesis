@@ -178,10 +178,13 @@ class CubePolyDataset(torch.utils.data.Dataset):
             tmp_points = {}
             for face in FACES:
                 # tmp_mask[face]
-                mask = torch.from_numpy(np.load(os.path.join(path, f"mask_{face}.npy")))
-                old_mask = torch.where(mask > 0)
-                plh = torch.zeros_like(mask)
-                plh[idxs] = 1
+                mask = torch.from_numpy(
+                    np.load(os.path.join(path, f"mask_{face}.npy"))
+                ).bool()
+                old_mask = torch.where(mask > 0)[0]
+                plh = torch.zeros_like(mask, dtype=bool)
+                plh[idxs] = True
+                plh &= mask
                 keep_points = plh[old_mask]
                 tmp_masks[face] = mask[idxs]
                 tmp_points[face] = torch.from_numpy(

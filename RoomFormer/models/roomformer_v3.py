@@ -91,7 +91,7 @@ class DINOMultiLayeredAdapter(nn.Module):
     def forward(self, batch):
         (
             _,
-            _,
+            samples,
             _,
             _,
             batched_room_faces,
@@ -100,6 +100,12 @@ class DINOMultiLayeredAdapter(nn.Module):
             batched_prj_points,
             batched_masks,
         ) = batch
+        if not isinstance(samples, NestedTensor):
+            samples = nested_tensor_from_tensor_list(samples)
+
+        density = samples.tensors
+        # print(f"shape: {density.shape}\nmax: {density.max()}\nmin: {density.min()}")
+
         batch_scene_bev, batch_scene_mask, batch_scene_cnt, batch_scene_agree = (
             self.dino_bev(
                 batched_room_faces,
@@ -108,6 +114,10 @@ class DINOMultiLayeredAdapter(nn.Module):
                 batched_prj_points,
             )
         )
+
+        # weight scene_bev with density map
+        batch_scene_bev = torch.mul(batch_scene_bev, density)
+
         out = [layer(batch_scene_bev) for layer in self.input_proj]
         return out
 
@@ -122,18 +132,20 @@ class DINOMultiLayeredWrapper(nn.Module):
         out_width: list[int],
     ):
         super().__init__()
-        patch_size = [hidden_dim // x for x in out_width]  # should be 32, 16, 8, 4
+        patch_size = [2, 4, 8, 16]  # should be 32, 16, 8, 4
         input_proj = []
         for i in range(num_backbone_outs):
             input_proj.append(
                 nn.Sequential(
                     nn.Conv2d(
                         in_channels,
-                        hidden_dim,
+                        int(hidden_dim // 2),
                         kernel_size=patch_size[i],
                         stride=patch_size[i],
                     ),
-                    nn.GroupNorm(32, hidden_dim),
+                    nn.ReLU(),
+                    nn.MaxPool2d(4, stride=4),
+                    nn.GroupNorm(32, int(hidden_dim // 2)),
                 )
             )
         for i in range(num_backbone_outs, num_feature_levels):
@@ -141,18 +153,20 @@ class DINOMultiLayeredWrapper(nn.Module):
                 nn.Sequential(
                     nn.Conv2d(
                         in_channels,
-                        hidden_dim,
+                        int(hidden_dim // 2),
                         kernel_size=patch_size[i],
                         stride=patch_size[i],
                     ),
-                    nn.GroupNorm(32, hidden_dim),
+                    nn.GroupNorm(32, int(hidden_dim // 2)),
+                    nn.ReLU(),
+                    nn.MaxPool2d(4, stride=4),
                 )
             )
             in_channels = hidden_dim
 
         self.input_proj = nn.ModuleList(input_proj)
 
-        for conv, _ in self.input_proj:
+        for conv, _, _, _ in self.input_proj:
             nn.init.zeros_(conv.weight)
             if conv.bias is not None:
                 nn.init.zeros_(conv.bias)
@@ -160,7 +174,7 @@ class DINOMultiLayeredWrapper(nn.Module):
     def forward(self, batch):
         (
             _,
-            _,
+            samples,
             _,
             _,
             batch_scene_bev,
@@ -168,6 +182,15 @@ class DINOMultiLayeredWrapper(nn.Module):
             _,
             _,
         ) = batch
+
+        if not isinstance(samples, NestedTensor):
+            samples = nested_tensor_from_tensor_list(samples)
+
+        density = samples.tensors
+        # print(f"shape: {density.shape}\nmax: {density.max()}\nmin: {density.min()}")
+
+        # weight scene_bev with density map
+        batch_scene_bev = torch.mul(batch_scene_bev, density)
 
         out = [layer(batch_scene_bev) for layer in self.input_proj]
         return out
@@ -221,20 +244,20 @@ class RoomFormer(nn.Module):
                 in_channels = backbone.num_channels[_]
                 input_proj_list.append(
                     nn.Sequential(
-                        nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                        nn.GroupNorm(32, hidden_dim),
+                        nn.Conv2d(in_channels, int(hidden_dim // 2), kernel_size=1),
+                        nn.GroupNorm(32, int(hidden_dim // 2)),
                     )
                 )
             for _ in range(num_feature_levels - num_backbone_outs):
                 input_proj_list.append(
                     nn.Sequential(
                         nn.Conv2d(
-                            in_channels, hidden_dim, kernel_size=3, stride=2, padding=1
+                            in_channels, int(hidden_dim // 2), kernel_size=3, stride=2, padding=1
                         ),
-                        nn.GroupNorm(32, hidden_dim),
+                        nn.GroupNorm(32, int(hidden_dim // 2)),
                     )
                 )
-                in_channels = hidden_dim
+                in_channels = int(hidden_dim // 2)
             self.input_proj = nn.ModuleList(input_proj_list)
         else:
             self.input_proj = nn.ModuleList(
@@ -369,8 +392,7 @@ class RoomFormer(nn.Module):
                 pos.append(pos_l)
 
         for idx in range(len(srcs)):
-            # print(f"scale for dino_multilayer[{idx}]: {self.dino_scales[idx].item()}")
-            srcs[idx] += dino_feats_list[idx]
+            srcs[idx] = torch.cat([srcs[idx], dino_feats_list[idx]], axis=1)
 
         query_embeds = self.query_embed.weight
         tgt_embeds = self.tgt_embed.weight

@@ -97,7 +97,7 @@ def config():
 
     a.add_argument(
         "--dino_bev_aggregation",
-        default="average",
+        default="random",
         help="aggregation strategy for multiple features 3D points",
     )
 
