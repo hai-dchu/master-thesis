@@ -273,7 +273,7 @@ class DINO_BEV(nn.Module):
 
                     feature_map = (
                         model_out[room_idx, face_idx, :, :]
-                        .repeat(1, 1, 16, 16)
+                        .repeat_interleave(16, dim=1).repeat_interleave(16, dim=2)
                         .squeeze()
                     )
                     feature_map = F.normalize(feature_map)
