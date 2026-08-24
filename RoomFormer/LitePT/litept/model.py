@@ -2,6 +2,7 @@
 LitePT model
 standalone implementation
 """
+
 import sys
 from collections import OrderedDict
 from functools import partial
@@ -26,15 +27,18 @@ def offset2batch(offset):
         len(bincount), device=offset.device, dtype=torch.long
     ).repeat_interleave(bincount)
 
+
 @torch.no_grad()
 def offset2bincount(offset):
     return torch.diff(
         offset, prepend=torch.tensor([0], device=offset.device, dtype=torch.long)
     )
 
+
 @torch.no_grad()
 def batch2offset(batch):
     return torch.cumsum(batch.bincount(), dim=0).long()
+
 
 class Point(Dict):
     """
@@ -204,8 +208,7 @@ class Point(Dict):
                     ] = pad[
                         _offset_pad[i + 1]
                         - 2 * patch_size
-                        + (bincount[i] % patch_size) : _offset_pad[i + 1]
-                        - patch_size
+                        + (bincount[i] % patch_size) : _offset_pad[i + 1] - patch_size
                     ]
                 pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
                 cu_seqlens.append(
@@ -223,8 +226,6 @@ class Point(Dict):
                 torch.concat(cu_seqlens), (0, 1), value=_offset_pad[-1]
             )
         return self[pad_key], self[unpad_key], self[cu_seqlens_key]
-
-
 
 
 class PointModule(nn.Module):
@@ -303,7 +304,7 @@ class PointSequential(PointModule):
                 else:
                     input = module(input)
         return input
-    
+
 
 class PointROPEAttention(PointModule):
     def __init__(
@@ -337,7 +338,6 @@ class PointROPEAttention(PointModule):
         self.rope = PointROPE(freq=rope_freq)
 
     def forward(self, point):
-
         H = self.num_heads
         K = self.patch_size
         C = self.channels
@@ -348,26 +348,29 @@ class PointROPEAttention(PointModule):
         inverse = unpad[point.serialized_inverse[self.order_index]]
 
         # padding and reshape feat and batch for serialized point patch
-        qkv = self.qkv(point.feat)[order] # [N, C]
+        qkv = self.qkv(point.feat)[order]  # [N, C]
 
         ## apply pointrope
-        pos = point.grid_coord[order] # [N, 3]
+        pos = point.grid_coord[order]  # [N, 3]
         pos = pos.reshape(-1, 3).unsqueeze(0)
 
         q, k, v = qkv.half().chunk(3, dim=-1)
-        q = q.reshape(-1, H, C // H).transpose(0,1)[None] # [1, H, N, head_dim] 
-        k = k.reshape(-1, H, C // H).transpose(0,1)[None] # [1, H, N, head_dim] 
+        q = q.reshape(-1, H, C // H).transpose(0, 1)[None]  # [1, H, N, head_dim]
+        k = k.reshape(-1, H, C // H).transpose(0, 1)[None]  # [1, H, N, head_dim]
 
         # workround to make pointrope cuda float32 happy
-        q = self.rope(q.float(), pos).to(q.dtype) # [1, H, N, head_dim] 
-        k = self.rope(k.float(), pos).to(k.dtype) # [1, H, N, head_dim]
+        q = self.rope(q.float(), pos).to(q.dtype)  # [1, H, N, head_dim]
+        k = self.rope(k.float(), pos).to(k.dtype)  # [1, H, N, head_dim]
 
         # assemble input for flash attention
-        qkv_rotated = torch.stack([
-            q.squeeze(0).transpose(0,1),
-            k.squeeze(0).transpose(0,1),
-            v.reshape(-1, H, C // H)
-        ], dim=1) # [N, 3, H, head_dim] 
+        qkv_rotated = torch.stack(
+            [
+                q.squeeze(0).transpose(0, 1),
+                k.squeeze(0).transpose(0, 1),
+                v.reshape(-1, H, C // H),
+            ],
+            dim=1,
+        )  # [N, 3, H, head_dim]
 
         feat = flash_attn.flash_attn_varlen_qkvpacked_func(
             qkv_rotated,
@@ -416,7 +419,7 @@ class GridPooling(PointModule):
             self.norm = PointSequential(norm_layer(out_channels))
         if act_layer is not None:
             self.act = PointSequential(act_layer())
-        
+
         self.re_serialization = re_serialization
         self.serialization_order = serialization_order
 
@@ -478,9 +481,12 @@ class GridPooling(PointModule):
         if "grid_size" in point.keys():
             point_dict["grid_size"] = point.grid_size * self.stride
         if "mask" in point.keys():
-            point_dict["mask"] = torch_scatter.segment_csr(
-                point.mask[indices].float(), idx_ptr, reduce="mean"
-            ) > 0.5
+            point_dict["mask"] = (
+                torch_scatter.segment_csr(
+                    point.mask[indices].float(), idx_ptr, reduce="mean"
+                )
+                > 0.5
+            )
 
         if self.traceable:
             point_dict["pooling_inverse"] = cluster
@@ -490,9 +496,11 @@ class GridPooling(PointModule):
             point = self.norm(point)
         if self.act is not None:
             point = self.act(point)
-        
+
         if self.re_serialization:
-            point.serialization(order=self.serialization_order, shuffle_orders=self.shuffle_orders)
+            point.serialization(
+                order=self.serialization_order, shuffle_orders=self.shuffle_orders
+            )
         point.sparsify()
         return point
 
@@ -570,7 +578,8 @@ class Embedding(PointModule):
     def forward(self, point: Point):
         point = self.stem(point)
         return point
-    
+
+
 class MLP(nn.Module):
     def __init__(
         self,
@@ -641,7 +650,6 @@ class Block(PointModule):
             self.norm0 = PointSequential(
                 norm_layer(channels),
             )
-
 
         if self.enable_attn:
             self.norm1 = PointSequential(norm_layer(channels))
@@ -783,9 +791,8 @@ class LitePT(PointModule):
                         norm_layer=bn_layer,
                         act_layer=act_layer,
                         re_serialization=enc_attn[s],
-                        serialization_order=self.order
+                        serialization_order=self.order,
                     ),
-
                     name="down",
                 )
             for i in range(enc_depths[s]):
@@ -807,7 +814,7 @@ class LitePT(PointModule):
                         cpe_indice_key=f"stage{s}",
                         enable_conv=enc_conv[s],
                         enable_attn=enc_attn[s],
-                        rope_freq=enc_rope_freq[s]
+                        rope_freq=enc_rope_freq[s],
                     ),
                     name=f"block{i}",
                 )
@@ -835,7 +842,6 @@ class LitePT(PointModule):
                         norm_layer=bn_layer,
                         act_layer=act_layer,
                     ),
-
                     name="up",
                 )
                 for i in range(dec_depths[s]):
@@ -857,7 +863,7 @@ class LitePT(PointModule):
                             cpe_indice_key=f"stage{s}",
                             enable_conv=dec_conv[s],
                             enable_attn=dec_attn[s],
-                            rope_freq=dec_rope_freq[s]
+                            rope_freq=dec_rope_freq[s],
                         ),
                         name=f"block{i}",
                     )
@@ -867,7 +873,7 @@ class LitePT(PointModule):
         """
         data_dict is the batched input point cloud, it should contain as least:
         1. feat [N, input_dim]: input feature for the point cloud
-        2. grid_coord [N, 3]: voxelized coordinate after grid sampling 
+        2. grid_coord [N, 3]: voxelized coordinate after grid sampling
            or/and
            coord [N, 3]: original coordinate + grid_size: grid_size used for grid sampling
         3. offset [batch_size]: separator of point clouds in batched data

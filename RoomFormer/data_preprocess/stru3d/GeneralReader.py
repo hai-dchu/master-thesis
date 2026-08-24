@@ -27,12 +27,12 @@ FACES = ["U", "F", "R", "L", "B", "D"]
 # Define Rotation matrices for each face relative to standard camera coordinate frame
 # OpenCV Frame: +X Right, +Y Down, +Z Forward
 ROTATIONS = {
-    "F": np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32),  # Yaw   0°
-    "R": np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], dtype=np.float32),  # Yaw +90°
-    "B": np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]], dtype=np.float32),  # Yaw 180°
-    "L": np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=np.float32),  # Yaw -90°
-    "D": np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float32),  # Pitch +90°
-    "U": np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float32),  # Pitch -90°
+    "F": np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float32),  # Yaw   0°
+    "R": np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=np.float32),  # Yaw +90°
+    "B": np.array([[-1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float32),  # Yaw 180°
+    "L": np.array([[0, 1, 0], [0, 0, -1], [-1, 0, 0]], dtype=np.float32),  # Yaw -90°
+    "D": np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32),  # Pitch +90°
+    "U": np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32),  # Pitch -90°
 }
 
 REJECT_THRESH_DEPTH = 500.0
@@ -208,64 +208,87 @@ class GeneralReader:
     def _get_points_in_face(
         self,
         pts_3d: np.array,  # Room-specific point cloud, i.e. a subset of the scene
-        K: np.array,
-        R_face: np.array,
-        R_base: np.array,
+        rotation: np.array,
         T_cam: np.array,
-        depth: np.array,
+        pts_color: np.array = None,
         img_width: int = 256,
         img_height: int = 256,
-        depth_tol: int = 10.0,
     ) -> tuple[np.array, np.array, np.array]:
         """
         Transforms 3D points into camera space and determines which points project
         """
-        # 1. Combined World-to-Camera Rotation Matrix
-        R_total = R_face @ R_base
+        tx, ty, tz = T_cam
+        T = np.array(
+            [[1, 0, 0, -tx], [0, 1, 0, -ty], [0, 0, 1, -tz], [0, 0, 0, 1]],
+            dtype=np.float64,
+        )
 
-        # 2. Transform 3D World Points -> 3D Camera Points
-        pts_cam = (R_total @ (pts_3d - T_cam).T).T  # (N, 3)
+        transform_matrix = np.eye(4, dtype=np.float64)
+        transform_matrix[:3, :3] = rotation
+        transform_matrix = transform_matrix @ T
 
-        # 3. Filter points in front of the camera (Z > 0)
-        valid_z = pts_cam[:, 2] > 0.1
+        # Transform to homogeneous coordinate
+        pts_homo = np.concat([pts_3d, np.ones(pts_3d.shape[0])[:, None]], axis=1)
 
-        # 4. Project onto Image Plane: [u, v, 1] = K * [X/Z, Y/Z, 1]
-        pts_proj = (K @ (pts_cam / pts_cam[:, 2:3]).T).T
-        u = pts_proj[:, 0]
-        v = pts_proj[:, 1]
+        # Translation and rotation
+        pts_trans = (transform_matrix @ pts_homo.T).T
 
-        # map to (0,255)
-        u = (u - u.min()) / (u.max() - u.min()) * (img_width - 1)
-        v = (v - v.min()) / (v.max() - v.min()) * (img_height - 1)
+        # Transform back to cartersian coordinate
+        pts_cart = pts_trans[:, :3]
 
-        # Keep points in front of the camera since every point is in frame
-        in_bounds = valid_z
+        x, y, z = pts_cart[:, 0], pts_cart[:, 1], pts_cart[:, 2]
+        valid_z = z > 1e-5  # threshold for points behind the camera
+        x, y, z = x[valid_z], y[valid_z], z[valid_z]
+        valid_indices = np.where(valid_z)[0]
 
-        # z_point = pts_cam[in_bounds, 2]
+        u_ndc = x / z  # normalized device coordinate
+        v_ndc = y / z
 
-        # 6. DEPTH VERIFICATION (Occlusion / Distance Agreement)
-        # Query corresponding planar depth from face depth map
-        # Since our data already contains a depth cube map, it is simpler to account for occlusion
-        # as depth-mismatch point (up to depth_tol) are considered occluded and should be hidden
+        # Frustum Culling (-1 <= NDC <= 1)
+        in_frustum = (u_ndc >= -1.0) & (u_ndc <= 1.0) & (v_ndc >= -1.0) & (v_ndc <= 1.0)
 
-        # u_valid = u[in_bounds].astype(int)
-        # v_valid = v[in_bounds].astype(int)
+        u_ndc = u_ndc[in_frustum]
+        v_ndc = v_ndc[in_frustum]
+        z_depth = z[in_frustum]
+        valid_indices = valid_indices[in_frustum]
 
-        return in_bounds, u[in_bounds], v[in_bounds]
+        # 5. Map NDC coordinates to discrete pixel coordinates
+        # Map [-1, 1] -> [0, face_size - 1]
+        px = np.floor((u_ndc + 1.0) * 0.5 * img_width).astype(np.int32)
+        py = np.floor((v_ndc + 1.0) * 0.5 * img_height).astype(np.int32)
 
-        # z_map_expected = depth[v_valid, u_valid]
+        # Clip bounds to eliminate potential rounding edge cases
+        px = np.clip(px, 0, img_width - 1)
+        py = np.clip(py, 0, img_height - 1)
 
-        # # Keep points whose 3D depth matches the face depth map within tolerance
-        # depth_match = (np.abs(z_point - z_map_expected) <= depth_tol) & (
-        #     z_map_expected > 0
-        # )
+        depth_buffer = np.full((img_width, img_height), np.inf, dtype=np.float32)
+        sort_idx = np.argsort(-z_depth)  # Descending order
 
-        # # Combine masks
-        # final_mask = np.zeros_like(in_bounds, dtype=bool)
-        # final_indices = np.where(in_bounds)[0][depth_match]
-        # final_mask[final_indices] = True
+        px_sorted = px[sort_idx]
+        py_sorted = py[sort_idx]
+        z_sorted = z_depth[sort_idx]
+        ids_sorted = valid_indices[sort_idx]
 
-        # return final_mask, u[final_mask], v[final_mask]
+        # Update buffers
+        id_buffer = np.full((img_width, img_height), -1, dtype=np.int32)
+        depth_buffer[py_sorted, px_sorted] = z_sorted
+        id_buffer[py_sorted, px_sorted] = ids_sorted
+
+        if pts_color is not None:
+            c_dim = pts_color.shape[1] if pts_color.ndim > 1 else 1
+            color_buffer = np.zeros(
+                (img_width, img_height, c_dim), dtype=pts_color.dtype
+            )
+            filtered_colors = pts_color[valid_indices]
+            color_buffer[py_sorted, px_sorted] = filtered_colors[sort_idx]
+
+        id_valid = id_buffer.reshape(-1)
+        id_valid = id_valid[id_valid > 0]
+
+        mask = np.zeros(pts_3d.shape[0])
+        mask[ids_sorted] = 1
+
+        return mask, px_sorted, py_sorted
 
     def export_point_cloud_and_cubemap(self):
         all_coords, all_colors = [], []
@@ -288,15 +311,6 @@ class GeneralReader:
 
             all_coords.append(coords)
             all_colors.append(colors)
-
-        K_face = np.array(
-            [
-                [self.face_w / 2.0, 0, self.face_w / 2.0],
-                [0, self.face_w / 2.0, self.face_w / 2.0],
-                [0, 0, 1],
-            ],
-            dtype=np.float32,
-        )
 
         # Since each room has their own point cloud, we need to keep track the mask
         # w.r.t. the scene point cloud
@@ -330,24 +344,17 @@ class GeneralReader:
             coords = coords[idx_room]
             colors = colors[idx_room]
 
-            depth_planar_dict = {
-                key: self._radial_to_planar_depth(self.depth_dict[key], K_face)
-                for key in self.img_dict.keys()
-            }
-
             out_path = self.out_dir / room
 
             for face in FACES:
                 mask = mask_temp.copy()
                 R_face = ROTATIONS[face]
-                depth = depth_planar_dict[face]
                 mask_room, u_valid, v_valid = self._get_points_in_face(
-                    coords,
-                    K_face,
-                    R_face,
-                    self.R_base,
-                    camera_center,
-                    depth,
+                    pts_3d=coords,
+                    rotation=R_face,
+                    T_cam=camera_center,
+                    img_width=self.face_w,
+                    img_height=self.face_w,
                 )
 
                 mask[start : start + coords.shape[0]] = mask_room
