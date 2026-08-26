@@ -210,14 +210,15 @@ class DINO_BEV(nn.Module):
 
     def forward(
         self,
-        rooms: list[Tensor],
+        scenes: list[Tensor],
         masks: list[Tensor],
         point_cloud: list[Tensor],
         project_points: list[list[list[Tensor]]],
+        mappings: list[list[list[Tensor]]],
     ):
         """
         params
-        rooms: {room, (batchx6x3x256x256)}
+        scenes: {room, (batchx6x3x256x256)}
         masks: {room, (batchx6xnum_pointsx1)}
         point_cloud: (batchxnum_pointsx3) point cloud for each scene in batch
         project_points: [num_visible_points] visible points projected on face
@@ -233,8 +234,8 @@ class DINO_BEV(nn.Module):
         batch_scene_mask = []
         batch_scene_cnt = []
         batch_scene_agree = []
-        for scene_idx in range(len(rooms)):
-            scene = rooms[scene_idx]
+        for scene_idx in range(len(scenes)):
+            scene = scenes[scene_idx]
             B, _, _, _ = scene.shape
             num_room = B // len(FACES)  # Should be divisible
             # (num_room*6)x(3x256x256) -> (num_room*6)x(dino_embed_dimx16x16)
@@ -263,23 +264,32 @@ class DINO_BEV(nn.Module):
             check_appear = torch.zeros([num_3D_points], dtype=bool, device=device)
 
             room_prj_points = project_points[scene_idx]
+            room_mappings = mappings[scene_idx]
+
             for room_idx, room in enumerate(room_prj_points):
                 for face_idx in range(len(FACES)):
                     u_idx = room[face_idx][:, 0].to(torch.int64)
                     v_idx = room[face_idx][:, 1].to(torch.int64)
+                    mapping = room_mappings[room_idx][face_idx]
 
-                    u_idx = torch.clamp(u_idx, 0, 255)
-                    v_idx = torch.clamp(v_idx, 0, 255)
+                    # print(mapping.shape)
+                    if mapping.shape[0] == 0:
+                        # print(f"mapping.shape[0] = {mapping.shape[0]}")
+                        continue
+
+                    # u_idx = torch.clamp(u_idx, 0, 255)
+                    # v_idx = torch.clamp(v_idx, 0, 255)
 
                     feature_map = (
                         model_out[room_idx, face_idx, :, :]
-                        .repeat_interleave(16, dim=1).repeat_interleave(16, dim=2)
+                        .repeat_interleave(16, dim=1)
+                        .repeat_interleave(16, dim=2)
                         .squeeze()
                     )
                     feature_map = F.normalize(feature_map)
                     mask = masks[scene_idx][room_idx][face_idx]
                     check_appear |= mask
-                    points_3D_features = feature_map[:, v_idx, u_idx].T  # permute(1, 0)
+                    points_3D_features = feature_map[:, u_idx, v_idx][:, mapping].T
 
                     # Aggregation method: average over num_mask for each point
                     # TODO: ablation
@@ -381,8 +391,8 @@ class PCAWrapper(nn.Module):
         self.out_channels = out_channels
         self.max_samples = max_samples
         self.is_fitted = False
-        self.register_buffer('components', None)
-        self.register_buffer('mean', None)
+        self.register_buffer("components", None)
+        self.register_buffer("mean", None)
 
     @torch.no_grad()
     def fit(

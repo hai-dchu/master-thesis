@@ -283,12 +283,18 @@ class GeneralReader:
             color_buffer[py_sorted, px_sorted] = filtered_colors[sort_idx]
 
         id_valid = id_buffer.reshape(-1)
-        id_valid = id_valid[id_valid > 0]
+        id_valid = id_valid[id_valid >= 0]
 
         mask = np.zeros(pts_3d.shape[0])
-        mask[ids_sorted] = 1
+        mask[id_valid] = 1
 
-        return mask, px_sorted, py_sorted
+        py_final, px_final = np.where(id_buffer != -1)
+
+        mapping = np.argsort(id_valid)
+
+        assert mapping.shape[0] - 1 == mapping.max(), print(f'why is {mapping.shape[0]} != {mapping.max()}???')
+
+        return mask, mapping, py_final, px_final
 
     def export_point_cloud_and_cubemap(self):
         all_coords, all_colors = [], []
@@ -349,7 +355,7 @@ class GeneralReader:
             for face in FACES:
                 mask = mask_temp.copy()
                 R_face = ROTATIONS[face]
-                mask_room, u_valid, v_valid = self._get_points_in_face(
+                mask_room, mapping, u_valid, v_valid = self._get_points_in_face(
                     pts_3d=coords,
                     rotation=R_face,
                     T_cam=camera_center,
@@ -363,14 +369,17 @@ class GeneralReader:
 
                 mask_name = out_path / f"mask_{face}"
                 prj_points_name = out_path / f"prj_points_{face}"
+                map_name = out_path / f"map_{face}"
 
                 if self.verbose or self.dry_run:
                     print(f"save mask to {mask_name}.npy")
                     print(f"save projected points to {prj_points_name}.npy")
+                    print(f"save pixel to points mapping to {map_name}.npy")
 
                 if not self.dry_run:
                     np.save(mask_name, mask)
                     np.save(prj_points_name, prj_points)
+                    np.save(map_name, mapping)
 
             start += coords.shape[0]
 

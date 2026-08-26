@@ -252,7 +252,11 @@ class RoomFormer(nn.Module):
                 input_proj_list.append(
                     nn.Sequential(
                         nn.Conv2d(
-                            in_channels, int(hidden_dim // 2), kernel_size=3, stride=2, padding=1
+                            in_channels,
+                            int(hidden_dim // 2),
+                            kernel_size=3,
+                            stride=2,
+                            padding=1,
                         ),
                         nn.GroupNorm(32, int(hidden_dim // 2)),
                     )
