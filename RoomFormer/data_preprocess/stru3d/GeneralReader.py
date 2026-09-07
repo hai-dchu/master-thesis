@@ -10,7 +10,6 @@ Author: Hai Chu
 
 import os
 from pathlib import Path
-from typing import List
 
 import cv2
 import numpy as np
@@ -45,6 +44,7 @@ class GeneralReader:
         out_dir: Path,
         face_w: int = 256,
         generate_color: bool = False,
+        generate_normal: bool = False,
         verbose: bool = False,
         dry_run: bool = False,
     ):
@@ -88,6 +88,7 @@ class GeneralReader:
 
         self.face_w = face_w
         self.generate_color = generate_color
+        self.generate_normal = generate_normal
 
         self.verbose = verbose
         self.dry_run = dry_run
@@ -97,9 +98,7 @@ class GeneralReader:
         self.R_base = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float32)
         self.camera_centers = self._load_camera_centers(self.cam_xyz_paths)
 
-        self._generate_faces()
-
-    def _load_camera_centers(self, cam_xyz_paths: List[str | Path]) -> np.array:
+    def _load_camera_centers(self, cam_xyz_paths: list[str | Path]) -> np.array:
         Ts = []
         for path in cam_xyz_paths:
             with open(path, "r") as f:
@@ -205,6 +204,55 @@ class GeneralReader:
         except AssertionError as e:
             print(e)
 
+    def _generate_point_cloud_normal(
+        self,
+        rgb_path: str,
+        depth_path: str,
+        camera_center: np.array,
+        random_level: int = 0,
+    ):
+        try:
+            depth_img = cv2.imread(
+                depth_path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR
+            )[:, :, None]
+            assert depth_img is not None, f"img {depth_path} not available"
+
+            # coords, colors = [], []
+
+            width, height = depth_img.shape[:2]
+            x_tick = 180.0 / width
+            y_tick = 360.0 / height
+
+            rgb_img = cv2.imread(rgb_path)
+            rgb_img = cv2.cvtColor(rgb_img, code=cv2.COLOR_BGR2RGB)
+
+            p_a = 90 - np.arange(width) * x_tick
+            p_b = np.arange(height) * y_tick - 180
+            p_a = np.deg2rad(p_a)
+            p_b = np.deg2rad(p_b)
+
+            p_a = np.tile(p_a[:, None], [1, height])[..., np.newaxis]
+            p_b = np.tile(p_b[None], [width, 1])[..., np.newaxis]
+
+            depth_img = depth_img + np.random.random((width, height, 1)) * random_level
+            z = depth_img * np.sin(p_a)
+            xy = depth_img * np.cos(p_a)
+            x = xy * np.sin(p_b)
+            y = xy * np.cos(p_b)
+
+            coords = np.concatenate([x, y, z], axis=-1) / 1000.0  # mm -> m
+            normals = normal_from_cross_product(coords)
+
+            mask = (depth_img > REJECT_THRESH_DEPTH).reshape(
+                -1,
+            )
+
+            coords = coords.reshape(-1, 3)[mask] + camera_center / 1000.0
+            normals = normals.reshape(-1, 3)[mask]
+            rgb_img = rgb_img.reshape(-1, 3)[mask]
+        except AssertionError as e:
+            print(e)
+
     def _get_points_in_face(
         self,
         pts_3d: np.array,  # Room-specific point cloud, i.e. a subset of the scene
@@ -292,11 +340,11 @@ class GeneralReader:
 
         mapping = np.argsort(id_valid)
 
-        assert mapping.shape[0] - 1 == mapping.max(), print(f'why is {mapping.shape[0]} != {mapping.max()}???')
-
         return mask, mapping, py_final, px_final
 
     def export_point_cloud_and_cubemap(self):
+        self._generate_faces()
+
         all_coords, all_colors = [], []
         for i, (room, rgb_path, depth_path, cam_xyz_path) in enumerate(
             zip(self.rooms, self.rgb_paths, self.depth_paths, self.cam_xyz_paths)
@@ -401,8 +449,68 @@ class GeneralReader:
         if not self.dry_run:
             export_ply(self.ply_path, point_cloud, self.generate_color)
 
+    def export_point_cloud_normal(self):
+        all_coords, all_colors, all_normals = [], [], []
+        for i, (room, rgb_path, depth_path, cam_xyz_path) in enumerate(
+            zip(self.rooms, self.rgb_paths, self.depth_paths, self.cam_xyz_paths)
+        ):
+            camera_center = self.camera_centers[i]
+            coords, colors, normals = self._generate_point_cloud(
+                rgb_path, depth_path, camera_center
+            )
+            colors = colors / 255.0  # normalize to [0,1]
 
-def export_ply(path: str, point_cloud: dict[str, np.array], generate_color=False):
+            # RoomFormer subsampling
+            coords[:, :2] = np.round(coords[:, :2] / 0.01) * 0.01
+            coords[:, 2] = np.round(coords[:, 2] / 0.1) * 0.1
+            _, unique_ind = np.unique(coords, return_index=True, axis=0)
+
+            coords = coords[unique_ind]  # / 1000
+            colors = colors[unique_ind]
+            normals = normals[unique_ind]
+
+            all_coords.append(coords)
+            all_colors.append(colors)
+            all_normals.append(normals)
+
+        # No subsampling since it's a different thing
+        all_coords = np.concat(all_coords, axis=0)
+        all_colors = np.concat(all_colors, axis=0)
+        all_normals = np.concat(all_normals, axis=0)
+
+        point_cloud = {}
+        point_cloud["coords"] = all_coords
+        point_cloud["colors"] = all_colors
+        point_cloud["normals"] = all_normals
+
+        out_path = self.out_dir / "point_cloud.ply"
+
+        if self.verbose or self.dry_run:
+            print(f"point cloud size: {all_coords.shape}")
+            print(f"saved to {out_path}")
+
+        if not self.dry_run:
+            export_ply(out_path, point_cloud, self.generate_color, self.generate_normal)
+
+
+def normal_from_cross_product(points_2d: np.ndarray) -> np.ndarray:
+    xyz_points_pad = np.pad(points_2d, ((0, 1), (0, 1), (0, 0)), mode="symmetric")
+    xyz_points_ver = (xyz_points_pad[:, :-1, :] - xyz_points_pad[:, 1:, :])[:-1, :, :]
+    xyz_points_hor = (xyz_points_pad[:-1, :, :] - xyz_points_pad[1:, :, :])[:, :-1, :]
+    xyz_normal = np.cross(xyz_points_hor, xyz_points_ver)
+    xyz_dist = np.linalg.norm(xyz_normal, axis=-1, keepdims=True)
+    xyz_normal = np.divide(
+        xyz_normal, xyz_dist, out=np.zeros_like(xyz_normal), where=xyz_dist != 0
+    )
+    return xyz_normal
+
+
+def export_ply(
+    path: str,
+    point_cloud: dict[str, np.array],
+    generate_color=False,
+    generate_normal=False,
+):
     """
     ply
     format ascii 1.0
@@ -419,9 +527,12 @@ def export_ply(path: str, point_cloud: dict[str, np.array], generate_color=False
     property float nz
     end_header
     """
-    assert "coords" in point_cloud.keys(), "empty point cloud"
-    assert ~(generate_color and ("colors" in point_cloud.keys())), (
+    assert "coords" in point_cloud, "empty point cloud"
+    assert ~(generate_color and ("colors" in point_cloud)), (
         "given generate_color=True, color for each point should be provided"
+    )
+    assert ~(generate_normal and ("normals" in point_cloud)), (
+        "given generate_normal=True, normal for each point should be provided"
     )
 
     with open(path, "w") as f:
@@ -431,15 +542,24 @@ def export_ply(path: str, point_cloud: dict[str, np.array], generate_color=False
         f.write("property float x\n")
         f.write("property float y\n")
         f.write("property float z\n")
+
         if generate_color:
             f.write("property uchar red\n")
             f.write("property uchar green\n")
             f.write("property uchar blue\n")
+
+        if generate_normal:
+            f.write("property float nx\n")
+            f.write("property float ny\n")
+            f.write("property float nz\n")
         f.write("end_header\n")
         for i in range(point_cloud["coords"].shape[0]):
             color = []
             coord = point_cloud["coords"][i].tolist()
+            normal = []
             if generate_color:
                 color = list(map(int, (point_cloud["colors"][i] * 255).tolist()))
-            data = coord + color
+            if generate_normal:
+                normal = point_cloud["normals"][i].tolist()
+            data = coord + color + normal
             f.write(" ".join(list(map(str, data))) + "\n")

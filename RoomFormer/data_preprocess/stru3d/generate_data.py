@@ -52,6 +52,12 @@ def config():
     ap.add_argument(
         "-d", "--dry_run", default=False, action="store_true", help="For testing"
     )
+    ap.add_argument(
+        "--normal",
+        default=False,
+        action="store_true",
+        help="If true, ONLY generate point cloud with normal (for LitePT)",
+    )
     args = ap.parse_args()
     return args
 
@@ -93,10 +99,14 @@ def main(args):
                 out_dir=out_path,
                 face_w=args.width,
                 generate_color=True,
+                generate_normal=args.normal,
                 verbose=args.verbose,
                 dry_run=args.dry_run,
             )
-            reader.export_point_cloud_and_cubemap()
+            if not args.normal:
+                reader.export_point_cloud_and_cubemap()
+            else:
+                reader.export_point_cloud_normal()
         except Exception as e:
             tb = e.__traceback__
             print(f"{type(e).__name__} - {e}")
