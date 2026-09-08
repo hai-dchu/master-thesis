@@ -100,9 +100,8 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
 
         padded_span = max_coords[None, :2] - min_coords[None, :2]
 
-        point_cloud[:, :2] = np.round(
-            (point_cloud[:, :2] - min_coords[None, :2]) / padded_span * image_res[None]
-        )
+        point_cloud[:, :2] = (point_cloud[:, :2] - min_coords[None, :2]) / padded_span * image_res[None]
+        
         # point_cloud[:, :2] = np.minimum(
         #     np.maximum(point_cloud[:, :2], np.zeros_like(image_res)), image_res - 1
         # )
