@@ -4,6 +4,7 @@
 # ------------------------------------------------------------
 
 import os
+import sys
 
 import numpy as np
 import torch
@@ -17,6 +18,9 @@ from PIL import Image
 from plyfile import PlyData
 from pycocotools.coco import COCO
 from util.poly_ops import resort_corners
+
+sys.path.append("LitePT")
+from LitePT.datasets.transform import Compose
 
 
 class PointCloudNormalDataset(torch.utils.data.Dataset):
@@ -53,7 +57,7 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
 
         # TODO: Fix dataset installation, since the current dataset (stru3d_processed) has missing scenes
         self.scene_ids = [
-            self.coco.imgs[i]["file_name"].split("/")[0] for i in self.coco.imgs
+            self.coco.imgs[i]["file_name"].split("/")[-2] for i in self.coco.imgs
         ]  # sorted(os.listdir(self.data_root))
 
     def __len__(self):
@@ -64,7 +68,7 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
 
     def _load_point_cloud_normal(
         self, scene_id: str
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[np.array, np.array, np.array]:
         assert scene_id in self.scene_ids, "scene_id not found"
         ply_path = os.path.join(self.data_root, scene_id, "point_cloud.ply")
         plydata = PlyData.read(ply_path)
@@ -79,6 +83,19 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         xyz = xyz[idxs]
         colors = colors[idxs]
         normals = normals[idxs]
+
+        return xyz, colors, normals
+
+    def _load_point_cloud_normal_npy(
+        self, scene_id: str
+    ) -> tuple[np.array, np.array, np.array]:
+        assert scene_id in self.scene_ids, "scene_id not found"
+        npy_path = os.path.join(self.data_root, scene_id, "point_cloud.npy")
+        npydata = np.load(npy_path)  # PlyData.read(ply_path)
+        # vertex = plydata["vertex"]
+        xyz = npydata[:, :3]
+        colors = npydata[:, 3:6]
+        normals = npydata[:, 6:]
 
         return xyz, colors, normals
 
@@ -100,8 +117,10 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
 
         padded_span = max_coords[None, :2] - min_coords[None, :2]
 
-        point_cloud[:, :2] = (point_cloud[:, :2] - min_coords[None, :2]) / padded_span * image_res[None]
-        
+        point_cloud[:, :2] = (
+            (point_cloud[:, :2] - min_coords[None, :2]) / padded_span * image_res[None]
+        )
+
         # point_cloud[:, :2] = np.minimum(
         #     np.maximum(point_cloud[:, :2], np.zeros_like(image_res)), image_res - 1
         # )
@@ -200,7 +219,7 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         _, h, w = record["image"].shape
 
         scene_id = self.scene_ids[index]
-        point_cloud, colors, normals = self._load_point_cloud_normal(scene_id)
+        point_cloud, colors, normals = self._load_point_cloud_normal_npy(scene_id)
 
         point_cloud = self._point_cloud_augmentation(
             point_cloud, horizontal=_hor, vertical=_ver, rotate=_rotate
@@ -209,13 +228,13 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
             normals, horizontal=_hor, vertical=_ver, rotate=_rotate
         )
         point_cloud, normal = self._point_cloud_alignment(
-            point_cloud, normal, width=256, height=256
+            point_cloud, normal, width=h, height=w
         )
-        points = dict(
-            coord=point_cloud,
-            color=colors,
-            normal=normal,
-        )
+        points = {
+            "coord": point_cloud,
+            "color": colors,
+            "normal": normal,
+        }
 
         points = self._point_transforms(points)
 
@@ -359,7 +378,30 @@ def make_poly_transforms(image_set):
     raise ValueError(f"unknown {image_set}")
 
 
-def build(mode, args, point_transforms):
+def make_point_transforms(grid_size=0.5):
+    data_config = [
+        {
+            "type": "GridSample",
+            "grid_size": 0.5,
+            "hash_type": "fnv",
+            "mode": "train",
+            "return_grid_coord": True,
+            "return_inverse": True,
+        },
+        {"type": "ToTensor"},
+        {"type": "Update", "keys_dict": {"grid_size": 0.5}},
+        {
+            "type": "Collect",
+            "keys": ("coord", "grid_coord", "grid_size"),
+            "feat_keys": ("color", "normal"),
+        },
+    ]
+    point_transform = Compose(data_config)
+
+    return point_transform
+
+
+def build(mode, args):
     assert os.path.exists(os.path.abspath(args.dataset_root)), (
         f"{args.dataset_root} does not exist"
     )
@@ -368,7 +410,7 @@ def build(mode, args, point_transforms):
     dataset = PointCloudNormalDataset(
         dataset_root,
         transforms=make_poly_transforms(mode),
-        point_transforms=point_transforms,
+        point_transforms=make_point_transforms(args.litept_grid_size),
         aug_rotate=False,
         aug_flip=False,
         semantic_classes=args.semantic_classes,
