@@ -16,9 +16,14 @@ import argparse
 import os
 from pathlib import Path
 
+import numpy as np
+from GeneralReader import GeneralReader
 from tqdm import tqdm
 
-from GeneralReader import GeneralReader
+with open("data_preprocess/stru3d/invalid_scenes.txt", "r") as file:
+    INVALID_SCENES = file.read().split(",")
+
+INVALID_SCENES = [int(x) for x in INVALID_SCENES]
 
 
 def config():
@@ -27,6 +32,7 @@ def config():
     )
     ap.add_argument(
         "--data_dir",
+        default="data/Structured3D",
         help="Data directory. For Structured3D, it would be data/Structured3D",
     )
     ap.add_argument(
@@ -79,11 +85,15 @@ def main(args):
     #       | camera_xyz.txt
     scenes = os.listdir(data_root)
     for scene in tqdm(sorted(scenes)):
+        if int(scene.split("_")[-1]) in INVALID_SCENES:
+            if args.dry_run or args.verbose:
+                print(f"skip {scene}")
+            continue
         try:
-            if args.verbose:
-                print(f"processing {scene}")
+            # if args.verbose or args.dry_run:
+            #     print(f"processing {scene}")
             id = int(scene.split("_")[1])
-            target = ""
+            target = None
             if id < 3000:
                 target = "train"
             elif id >= 3000 and id < 3250:
@@ -91,7 +101,8 @@ def main(args):
             else:
                 target = "test"
             scene_path = data_root / scene
-            out_path = output_dir / target / scene
+            out_path = data_root / scene
+            npy_out_path = output_dir / target / scene
             if not out_path.exists():
                 out_path.mkdir(parents=True, exist_ok=True)
             reader = GeneralReader(
@@ -103,15 +114,29 @@ def main(args):
                 verbose=args.verbose,
                 dry_run=args.dry_run,
             )
+            # if not args.dry_run:
             if not args.normal:
                 reader.export_point_cloud_and_cubemap()
             else:
-                reader.export_point_cloud_normal()
+                point_cloud = reader.export_point_cloud_normal()
+
+                xyz = point_cloud['coords']
+                colors = point_cloud['colors']
+                normals = point_cloud['normals']
+
+                # TODO: Downsample point cloud (1/10, 1/20 etc.)
+                idxs = [i for i in range(0, len(xyz), 10)]
+                xyz = xyz[idxs]
+                colors = colors[idxs]
+                normals = normals[idxs]
+
+                merge = np.concat([xyz, colors, normals], axis=1)
+                if args.dry_run or args.verbose:
+                    print(npy_out_path / "point_cloud.npy", merge.shape)
+                else:
+                    np.save(npy_out_path / "point_cloud.npy", merge)
         except Exception as e:
-            tb = e.__traceback__
-            print(f"{type(e).__name__} - {e}")
-            print(f"File Name: {tb.tb_frame.f_code.co_filename}")
-            print(f"Line Number: {tb.tb_lineno}")
+            print(e)
 
 
 if __name__ == "__main__":

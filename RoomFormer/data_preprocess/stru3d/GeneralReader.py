@@ -250,6 +250,8 @@ class GeneralReader:
             coords = coords.reshape(-1, 3)[mask] + camera_center / 1000.0
             normals = normals.reshape(-1, 3)[mask]
             rgb_img = rgb_img.reshape(-1, 3)[mask]
+
+            return coords, rgb_img, normals
         except AssertionError as e:
             print(e)
 
@@ -393,7 +395,6 @@ class GeneralReader:
             coords = all_coords[i]
             colors = all_colors[i]
 
-            #
             idx_room = room_idx[i]
             coords = coords[idx_room]
             colors = colors[idx_room]
@@ -455,7 +456,7 @@ class GeneralReader:
             zip(self.rooms, self.rgb_paths, self.depth_paths, self.cam_xyz_paths)
         ):
             camera_center = self.camera_centers[i]
-            coords, colors, normals = self._generate_point_cloud(
+            coords, colors, normals = self._generate_point_cloud_normal(
                 rgb_path, depth_path, camera_center
             )
             colors = colors / 255.0  # normalize to [0,1]
@@ -491,6 +492,8 @@ class GeneralReader:
 
         if not self.dry_run:
             export_ply(out_path, point_cloud, self.generate_color, self.generate_normal)
+
+        return point_cloud
 
 
 def normal_from_cross_product(points_2d: np.ndarray) -> np.ndarray:
