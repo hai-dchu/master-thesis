@@ -12,11 +12,10 @@ import spconv.pytorch as spconv
 import torch
 import torch.nn as nn
 import torch_scatter
-
 from addict import Dict
+from libs.pointrope import PointROPE
 from timm.layers import DropPath
 
-from libs.pointrope import PointROPE
 from .serialization import encode
 
 
