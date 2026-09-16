@@ -17,5 +17,5 @@ def build_mixed_dataset(image_set, args):
     return build_cube_poly(image_set, args)
 
 
-def build_normal_dataset(image_set, args, point_transforms):
-    return build_litept_normal(image_set, args, point_transforms)
+def build_normal_dataset(image_set, args):
+    return build_litept_normal(image_set, args)
