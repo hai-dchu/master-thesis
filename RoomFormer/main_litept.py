@@ -64,10 +64,13 @@ def _config_litept(parser):
     group.add_argument("--litept_drop_path", default=0.3)
     group.add_argument("--litept_shuffle_orders", default=True)
     group.add_argument("--litept_prenorm", default=True)
-    group.add_argument("--litept_enc_mode", default=False)
+    group.add_argument("--litept_enc_mode", default=False, action="store_true")
+
+    # Grid size for density creation
+    group.add_argument("--litept_grid_size", default=256, type=int)
 
     # Grid size for voxelization
-    group.add_argument("--litept_grid_size", default=256, type=int)
+    group.add_argument("--grid_sample_size", default=0.5, type=float)
 
     # MLP layer after LitePT
     group.add_argument(
@@ -94,10 +97,16 @@ def _config_litept(parser):
         action="store_true",
         help="if included, freeze LitePT",
     )
+    group.add_argument(
+        "--litept_start_epoch",
+        default=10,
+        type=int,
+        help="freeze litept until this epoch",
+    )
     return parser
 
 
-def _config_deformable_decoder(parser):
+def _config_deformable_(parser):
     group = parser.add_argument_group("config_deformable_decoder")
     # DeformableTransformerDecoder
     group.add_argument(
@@ -111,6 +120,12 @@ def _config_deformable_decoder(parser):
         default=8,
         type=int,
         help="Number of attention heads inside the transformer's attentions",
+    )
+    group.add_argument(
+        "--enc_layers",
+        default=6,
+        type=int,
+        help="Number of encoding layers in the transformer",
     )
     group.add_argument(
         "--dec_layers",
@@ -222,7 +237,7 @@ def config():
 
     # Just for the ease of comprehension
     parser = _config_litept(parser)
-    parser = _config_deformable_decoder(parser)
+    parser = _config_deformable_(parser)
     parser = _config_litept_deformable_transformer(parser)
     parser = _config_roomformer_criterion(parser)
 
@@ -345,7 +360,6 @@ def collate_fn(batch):
 
 def main(args):
     print(f"git:\n {utils.get_sha()}\n")
-    print(args)
 
     # setup wandb for logging
     if args.wandb:
@@ -353,6 +367,7 @@ def main(args):
         wandb.init(project="RoomFormer")
         wandb.run.name = args.run_name
 
+    print(args)
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
@@ -411,7 +426,7 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if not match_name_keywords(n, ["encoder"]) and p.requires_grad
+                if not match_name_keywords(n, ["backbone"]) and p.requires_grad
             ],
             "lr": args.lr,
         },
@@ -419,7 +434,7 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["encoder.backbone"]) and p.requires_grad
+                if match_name_keywords(n, ["backbone.litept"]) and p.requires_grad
             ],
             "lr": args.lr_backbone if args.litept_checkpoint is not None else args.lr,
         },
@@ -427,7 +442,9 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["encoder.mlp"]) and p.requires_grad
+                if match_name_keywords(n, ["backbone"])
+                and not match_name_keywords(n, ["backbone.litept"])
+                and p.requires_grad
             ],
             "lr": args.lr * args.lr_litept_mlp_mult,
         },
@@ -439,16 +456,23 @@ def main(args):
 
     # lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
     #     optimizer,
-    #     max_lr=2e-2,
+    #     max_lr=[2e-2, 2e-3, 1e-2],
     #     epochs=args.epochs,
     #     steps_per_epoch=len(data_loader_train),
     # )
 
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [400])  # args.lr_drop)
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer, [400]
+    )  # args.lr_drop)
 
     output_dir = Path(args.output_dir)
 
     # TODO: Write resume training weight here (not now)
+    # Frozen LitePT for the first few batch
+    if args.litept_checkpoint is not None:
+        model.backbone.litept.requires_grad_(False)
+
+    flag = True
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
@@ -460,6 +484,10 @@ def main(args):
     print("Start training")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
+        if epoch > args.litept_start_epoch and flag and args.litept_enc_mode:
+            model.backbone.litept.requires_grad_(True)
+            flag = False
+
         train_stats = train_one_epoch(
             model,
             criterion,

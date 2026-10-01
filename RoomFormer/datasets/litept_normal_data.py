@@ -70,7 +70,12 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         self, scene_id: str
     ) -> tuple[np.array, np.array, np.array]:
         assert scene_id in self.scene_ids, "scene_id not found"
-        ply_path = os.path.join(self.data_root, scene_id, "point_cloud.ply")
+        # ply_path = os.path.join(self.data_root, scene_id, "point_cloud.ply")
+        ply_path = os.path.join(
+            "/home/hai/master-thesis/RoomFormer/data/Structured3D",
+            scene_id,
+            "point_cloud.ply",
+        )
         plydata = PlyData.read(ply_path)
         vertex = plydata["vertex"]
 
@@ -79,10 +84,10 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         normals = np.stack([vertex["nx"], vertex["ny"], vertex["nz"]], axis=-1)
 
         # TODO: Downsample point cloud (1/10, 1/20 etc.)
-        idxs = [i for i in range(0, len(xyz), 10)]
-        xyz = xyz[idxs]
-        colors = colors[idxs]
-        normals = normals[idxs]
+        # idxs = [i for i in range(0, len(xyz), 10)]
+        # xyz = xyz[idxs]
+        # colors = colors[idxs]
+        # normals = normals[idxs]
 
         return xyz, colors, normals
 
@@ -176,8 +181,8 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         if vertical:
             normals[:, 1] = -normals[:, 1]
 
-        if horizontal ^ vertical:
-            normals = -normals
+        # if horizontal ^ vertical:
+        #     normals = -normals
 
         if rotate > 0:
             rad = rotate / 180.0 * np.pi
@@ -227,9 +232,11 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         normal = self._normal_augmentation(
             normals, horizontal=_hor, vertical=_ver, rotate=_rotate
         )
-        point_cloud, normal = self._point_cloud_alignment(
-            point_cloud, normal, width=h, height=w
-        )
+        # point_cloud, normal = self._point_cloud_alignment(
+        #     point_cloud, normal, width=h, height=w
+        # )
+        # Collapse z
+        # point_cloud[:, 2] = 0
         points = {
             "coord": point_cloud,
             "color": colors,
@@ -241,13 +248,7 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         for k, v in points.items():
             record[k] = v
 
-        # record["coord"] = self._point_cloud_augmentation(
-        #     point_cloud, horizontal=_hor, vertical=_ver, rotate=_rotate
-        # )
-        # record["color"] = colors
-        # record["normal"] = self._normal_augmentation(
-        #     normals, horizontal=_hor, vertical=_ver, rotate=_rotate
-        # )
+        # record['raw_coord'] = point_cloud
 
         return record
 
@@ -382,14 +383,14 @@ def make_point_transforms(grid_size=0.5):
     data_config = [
         {
             "type": "GridSample",
-            "grid_size": 0.5,
+            "grid_size": grid_size,
             "hash_type": "fnv",
             "mode": "train",
             "return_grid_coord": True,
             "return_inverse": True,
         },
         {"type": "ToTensor"},
-        {"type": "Update", "keys_dict": {"grid_size": 0.5}},
+        {"type": "Update", "keys_dict": {"grid_size": grid_size}},
         {
             "type": "Collect",
             "keys": ("coord", "grid_coord", "grid_size"),
@@ -410,7 +411,7 @@ def build(mode, args):
     dataset = PointCloudNormalDataset(
         dataset_root,
         transforms=make_poly_transforms(mode),
-        point_transforms=make_point_transforms(args.litept_grid_size),
+        point_transforms=make_point_transforms(args.grid_sample_size),
         aug_rotate=False,
         aug_flip=False,
         semantic_classes=args.semantic_classes,

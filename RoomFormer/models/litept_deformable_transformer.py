@@ -1,10 +1,15 @@
 import math
+import os
 import sys
 
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from .deformable_transformer import (
+    DeformableTransformer,
     DeformableTransformerDecoder,
     DeformableTransformerDecoderLayer,
 )
@@ -12,8 +17,21 @@ from .matcher import build_matcher
 from .roomformer import MLP, SetCriterion, _get_clones
 
 sys.path.append("LitePT")
+import importlib
+import sys
+from pathlib import Path
+
 from LitePT.litept.model import MLP as FFN
 from LitePT.litept.model import LitePT, PointSequential
+
+# 1. Add PillarNet-LTS directory to Python's path
+pillarnet_dir = Path("~/master-thesis/RoomFormer/PillarNet-LTS").expanduser().resolve()
+if str(pillarnet_dir) not in sys.path:
+    sys.path.insert(0, str(pillarnet_dir))
+
+# 2. Import standard det3d modules without the 'PillarNet-LTS.' prefix
+pillar_modules = importlib.import_module("det3d.ops.pillar_ops.pillar_modules")
+det3d_models = importlib.import_module("det3d.models")
 
 
 def build_feature_map_lexsort(
@@ -25,6 +43,9 @@ def build_feature_map_lexsort(
     max_k: int = 20,
     embed_dim: int = 72,
 ) -> torch.Tensor:
+    """
+    Assume that the points xy-coordinates are mapped to range (256,256)
+    """
     device = coords.device
     num_points = coords.shape[0]
 
@@ -65,6 +86,7 @@ def build_feature_map_lexsort(
 
     # 4. Cap at max_k points per pixel
     valid_mask = slot_idx < max_k
+    # valid_mask = torch.from_numpy(np.sort(np.random.choice(slot_idx.cpu().numpy(), max_k)))
     valid_pixel_idx = sorted_pixel_idx[valid_mask]
     valid_slot_idx = slot_idx[valid_mask]
     valid_feats = sorted_feats[valid_mask]
@@ -86,6 +108,64 @@ def build_feature_map_lexsort(
     return feat_map
 
 
+def build_feature_map_density(
+    coords: torch.Tensor,  # (N, 3) [x, y, z]
+    feats: torch.Tensor,  # (N, embed_dim)
+    batch_idxs: torch.Tensor,  # (N,)
+    batch_size: int = 1,
+    grid_size: int = 256,
+    embed_dim: int = 72,
+    eps: float = 1e-6,
+):
+    device = coords.device
+    coords = coords[:, :2].clone().detach()  # never mutate caller's tensor
+    batch_idxs = batch_idxs.long()
+    num_points = coords.shape[0]
+
+    # grid_res = torch.tensor((grid_size, grid_size), device=device, dtype=coords.dtype)
+
+    # for b in range(batch_size):
+    #     idx = batch_idxs == b
+    #     pts = coords[idx]
+    #     min_c = pts.min(0).values
+    #     max_c = pts.max(0).values
+    #     span = (max_c - min_c).clamp_min(eps)
+
+    #     pad = 0.1 * span
+    #     min_c = min_c - pad
+    #     max_c = max_c + pad
+    #     padded_span = (max_c - min_c).clamp_min(eps)
+
+    #     coords[idx] = (pts - min_c[None]) / padded_span[None] * grid_res[None]
+
+    x = coords[:, 0].round().long().clamp_(0, grid_size - 1)
+    y = coords[:, 1].round().long().clamp_(0, grid_size - 1)
+    linear_idx = batch_idxs * (grid_size * grid_size) + y * grid_size + x
+
+    feat_buf = torch.zeros(
+        batch_size * grid_size * grid_size, embed_dim, device=device, dtype=feats.dtype
+    )
+    feat_buf.index_add_(0, linear_idx, feats)
+
+    count_buf = torch.zeros(
+        batch_size * grid_size * grid_size, 1, device=device, dtype=feats.dtype
+    )
+    count_buf.index_add_(
+        0, linear_idx, torch.ones(num_points, 1, device=device, dtype=feats.dtype)
+    )
+
+    mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg, not sum
+    log_count = torch.log1p(count_buf)  # explicit density channel, not normalized away
+
+    feat_map = torch.cat([feat_buf, log_count], dim=-1)
+    feat_map = (
+        feat_map.view(batch_size, grid_size, grid_size, -1)
+        .permute(0, 3, 1, 2)
+        .contiguous()
+    )
+    return feat_map
+
+
 def get_valid_ratio(mask: torch.Tensor) -> torch.Tensor:
     _, H, W = mask.shape
     valid_H = torch.sum(~mask[:, :, 0], 1)
@@ -96,7 +176,36 @@ def get_valid_ratio(mask: torch.Tensor) -> torch.Tensor:
     return valid_ratio
 
 
-class LitePTEncoder(nn.Module):
+class Dense2DBasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channels):
+        super().__init__()
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, 3, padding=1, bias=False),
+            nn.GroupNorm(16, in_channels),
+            nn.ReLU(),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, 3, padding=1, bias=False),
+            nn.GroupNorm(16, in_channels),
+        )
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.conv2(out)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class LitePTBackbone(nn.Module):
     def __init__(
         self,
         litept: nn.Module,
@@ -107,35 +216,75 @@ class LitePTEncoder(nn.Module):
         max_k=16,
     ):
         super().__init__()
-        self.backbone = litept
-        self.mlp = PointSequential(
-            FFN(
-                in_channels=enc_out_channels,
-                hidden_channels=enc_out_channels * enc_mlp_ratio,
-                out_channels=out_channels,
-            )
-        )
+        self.litept = litept
 
+        self.enc_out_channels = enc_out_channels
         self.grid_size = grid_size
         self.max_k = max_k
         self.embed_dim = out_channels
-        self.out_channels = out_channels * max_k
+        self.out_channels = out_channels
+
+        channels = [64, 128, 256, 256, 256, 256]
+
+        conv = [
+            nn.Sequential(
+                nn.Conv2d(self.enc_out_channels + 1, 64, kernel_size=7, stride=2, padding=3, bias=False),
+                nn.GroupNorm(16, 64),
+                # Dense2DBasicBlock(64),
+                # Dense2DBasicBlock(64),
+                nn.ReLU(),
+            )
+        ]
+        for i in range(len(channels) - 1):
+            conv.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        channels[i], channels[i + 1], 3, 2, padding=1, bias=False
+                    ),
+                    nn.GroupNorm(16, channels[i + 1]),
+                    # nn.BatchNorm2d(channels[i+1], momentum=0.01, eps=1e-3),
+                    nn.ReLU(),
+                    Dense2DBasicBlock(channels[i + 1]),
+                    Dense2DBasicBlock(channels[i + 1]),
+                )
+            )
+
+        self.conv = nn.ModuleList(conv)
+
+        # self.proj = nn.Conv2d(enc_out_channels + 1, 256, 1, 1)
 
         # Possibly freezing LitePT?
 
     def forward(self, x):
-        out = self.mlp(self.backbone(x))
-        feat = build_feature_map_lexsort(
-            coords=out.coord,
+        out = self.litept(x)
+        coords = out["coord"]
+
+        feat = build_feature_map_density(
+            coords=coords,
             feats=out.feat,
             batch_idxs=out.batch,
             batch_size=int(out.batch.max().item() + 1),
             grid_size=self.grid_size,
-            max_k=self.max_k,
-            embed_dim=self.embed_dim,
+            embed_dim=self.enc_out_channels,
         )
+        # feat = torch.stack(x["image"]).to(torch.device("cuda"))
 
-        return feat
+        feats = []
+        for i, layer in enumerate(self.conv):
+            conv_out = layer(feat)
+            if i > 1:
+                if i > 2:
+                    feat = F.relu(
+                        conv_out
+                        + F.interpolate(feat, size=conv_out.shape[-1], mode="bilinear")
+                    )
+                else:
+                    feat = conv_out
+                feats.append(feat)
+            else:
+                feat = conv_out
+
+        return feats
 
 
 class DeformableTransformerDecoderWrapper(nn.Module):
@@ -223,7 +372,7 @@ class DeformableTransformerDecoderWrapper(nn.Module):
         hs, inter_references, inter_classes = self.decoder(
             tgt=tgt,
             reference_points=reference_points,
-            src=src,
+            src=src_flatten,
             src_flatten=None,
             src_spatial_shapes=spatial_shapes,
             src_level_start_index=level_start_index,
@@ -235,6 +384,51 @@ class DeformableTransformerDecoderWrapper(nn.Module):
         return hs, init_reference_out, inter_references, inter_classes
 
 
+class PositionEmbeddingSine(nn.Module):
+    """
+    This is a more standard version of the position embedding, very similar to the one
+    used by the Attention is all you need paper, generalized to work on images.
+    """
+
+    def __init__(
+        self, num_pos_feats=64, temperature=10000, normalize=False, scale=None
+    ):
+        super().__init__()
+        self.num_pos_feats = num_pos_feats
+        self.temperature = temperature
+        self.normalize = normalize
+        if scale is not None and normalize is False:
+            raise ValueError("normalize should be True if scale is passed")
+        if scale is None:
+            scale = 2 * math.pi
+        self.scale = scale
+
+    def forward(self, mask):
+        assert mask is not None
+        device = mask.device
+        not_mask = ~mask
+        y_embed = not_mask.cumsum(1, dtype=torch.float32)
+        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        if self.normalize:
+            eps = 1e-6
+            y_embed = (y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale
+            x_embed = (x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale
+
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=device)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        pos_x = torch.stack(
+            (pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4
+        ).flatten(3)
+        pos_y = torch.stack(
+            (pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4
+        ).flatten(3)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        return pos
+
+
 class LitePTDeformableTransformer(nn.Module):
     """
     Equivalent to RoomFormer class
@@ -242,8 +436,9 @@ class LitePTDeformableTransformer(nn.Module):
 
     def __init__(
         self,
-        encoder: nn.Module,
-        decoder: nn.Module,
+        backbone: nn.Module,
+        position_embedding: nn.Module,
+        transformer: nn.Module,
         num_classes: int,
         num_queries: int,
         num_polys: int,
@@ -254,14 +449,15 @@ class LitePTDeformableTransformer(nn.Module):
         semantic_classes: int = -1,
     ):
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
+        self.backbone = backbone
+        self.position_embedding = position_embedding
+        self.transformer = transformer
         self.num_queries = num_queries
         self.num_polys = num_polys
         assert num_queries % num_polys == 0
         self.num_queries_per_poly = num_queries // num_polys
 
-        _enc_out_channels = hidden_dim = encoder.out_channels
+        _enc_out_channels = hidden_dim = 256
 
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.coords_embed = MLP(hidden_dim, hidden_dim, 2, 3)
@@ -275,7 +471,7 @@ class LitePTDeformableTransformer(nn.Module):
         nn.init.constant_(self.coords_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.coords_embed.layers[-1].bias.data, 0)
 
-        num_pred = self.decoder.num_layers
+        num_pred = self.transformer.decoder.num_layers
 
         if with_poly_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
@@ -290,8 +486,8 @@ class LitePTDeformableTransformer(nn.Module):
                 [self.coords_embed for _ in range(num_pred)]
             )
 
-        self.decoder.decoder.coords_embed = self.coords_embed
-        self.decoder.decoder.class_embed = self.class_embed
+        self.transformer.decoder.coords_embed = self.coords_embed
+        self.transformer.decoder.class_embed = self.class_embed
 
         # Semantically-rich floorplan
         self.room_class_embed = None
@@ -315,26 +511,54 @@ class LitePTDeformableTransformer(nn.Module):
         - offset: mark end of each point cloud in batch
         - feat: [rgb, normal] stacked rgb + normal values for each point
         """
-        memory = self.encoder(samples)
-        bs = memory.shape[0]
-        device = memory.device
+        feats = self.backbone(samples)
+        # feats = [feat["conv4"], feat["conv5"]]
+        bs = feats[0].shape[0]
+        device = feats[0].device
 
         tgt = self.tgt_embed.weight
         query_embed = self.query_embed.weight
         # query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
         # tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
 
-        masks = torch.zeros(
+        mask = torch.zeros(
             bs,
-            self.encoder.grid_size,
-            self.encoder.grid_size,
+            256,
+            256,
             dtype=torch.bool,
             device=device,
         )
+        # mask = torch.zeros(
+        #     bs,
+        #     feats[0].shape[-2],
+        #     feats[0].shape[-1],
+        #     dtype=torch.bool,
+        #     device=device
+        # )
+        # pos = self.position_embedding(mask)
 
-        hs, _init_reference, inter_references, inter_classes = self.decoder(
-            [memory],
-            [masks],
+        # TODO: Currently this is just a placeholder.
+        # Maybe add some convolution to replace feat interpolation?
+        masks = []
+        pos = []
+        for ifeat in feats:
+            # ifeat = F.interpolate(feat, size=size, mode="bilinear")
+            size = ifeat.shape[-2:]
+            imask = (
+                F.interpolate(mask[None].float(), size=size, mode="nearest")
+                .squeeze(1)
+                .bool()
+            )[0]
+            ipos = self.position_embedding(imask)
+
+            # feats.append(ifeat)
+            masks.append(imask)
+            pos.append(ipos)
+
+        hs, _init_reference, inter_references, inter_classes = self.transformer(
+            feats,
+            masks,
+            # pos,
             query_embed,
             tgt,
         )
@@ -366,7 +590,7 @@ class LitePTDeformableTransformer(nn.Module):
         return out
 
 
-def build(args, train=True):
+def build_litept(args):
     litept = LitePT(
         in_channels=args.litept_in_channels,  # 6,
         order=args.litept_order,  # ("z", "z-trans", "hilbert", "hilbert-trans"),
@@ -411,7 +635,7 @@ def build(args, train=True):
             else:
                 print(f"{k} missing")
 
-        # Missing weight entries for decoder is expected since
+        # Missing weight entries for transformer is expected since
         # we are working with LitePT encoder (no dec, no seg)
 
         model_dict.update(filtered_weights)
@@ -420,7 +644,13 @@ def build(args, train=True):
         if args.litept_frozen:
             litept.requires_grad_(False)
 
-    encoder = LitePTEncoder(
+    return litept
+
+
+def build(args, train=True):
+    litept = build_litept(args)
+
+    backbone = LitePTBackbone(
         litept=litept,
         enc_out_channels=72
         if not args.litept_enc_mode
@@ -431,7 +661,10 @@ def build(args, train=True):
         max_k=args.litept_max_keep,
     )
 
-    decoder = DeformableTransformerDecoderWrapper(
+    N_steps = args.hidden_dim // 2
+    position_embedding = PositionEmbeddingSine(N_steps, normalize=True)
+
+    transformer = DeformableTransformerDecoderWrapper(
         d_model=args.hidden_dim,
         nhead=args.nheads,
         num_decoder_layers=args.dec_layers,
@@ -446,10 +679,28 @@ def build(args, train=True):
         query_pos_type=args.query_pos_type,
     )
 
+    # transformer = DeformableTransformer(
+    #     d_model=args.hidden_dim,
+    #     nhead=args.nheads,
+    #     num_encoder_layers=args.enc_layers,
+    #     num_decoder_layers=args.dec_layers,
+    #     dim_feedforward=args.dim_feedforward,
+    #     dropout=args.dropout,
+    #     activation="relu",
+    #     poly_refine=args.with_poly_refine,
+    #     return_intermediate_dec=True,
+    #     aux_loss=args.aux_loss,
+    #     num_feature_levels=args.num_feature_levels,
+    #     dec_n_points=args.dec_n_points,
+    #     enc_n_points=args.dec_n_points,
+    #     query_pos_type=args.query_pos_type,
+    # )
+
     num_classes = 1
     model = LitePTDeformableTransformer(
-        encoder,
-        decoder,
+        backbone,
+        position_embedding,
+        transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
         num_polys=args.num_polys,

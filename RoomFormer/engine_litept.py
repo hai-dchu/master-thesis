@@ -3,7 +3,8 @@ import json
 import math
 import os
 import sys
-import time
+
+# import time
 from collections.abc import Iterable
 
 import cv2
@@ -19,7 +20,7 @@ from shapely.geometry import Polygon
 from util.plot_utils import (
     plot_floorplan_with_regions,
     plot_room_map,
-    plot_score_map,
+    # plot_score_map,
     plot_semantic_rich_floorplan,
 )
 from util.poly_ops import pad_gt_polys
@@ -57,8 +58,12 @@ def train_one_epoch(
         gt_instances = [x.to(device) for x in batched_inputs["instances"]]
         room_targets = pad_gt_polys(gt_instances, model.num_queries_per_poly, device)
 
+        # torch.cuda.profiler.start()
         outputs = model(batched_inputs)
+        torch.cuda.synchronize()
+        # torch.cuda.profiler.stop()
         loss_dict = criterion(outputs, room_targets)
+        torch.cuda.synchronize()
         weight_dict = criterion.weight_dict
         losses = sum(
             loss_dict[k] * weight_dict[k] for k in loss_dict if k in weight_dict
@@ -78,7 +83,9 @@ def train_one_epoch(
             sys.exit(1)
 
         optimizer.zero_grad()
+        torch.cuda.synchronize()
         losses.backward()
+        torch.cuda.synchronize()
         # lr_scheduler.step()
 
         if max_norm > 0:
@@ -88,6 +95,7 @@ def train_one_epoch(
         else:
             grad_total_norm = utils.get_total_grad_norm(model.parameters(), max_norm)
         optimizer.step()
+        torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value, **loss_dict_scaled, **loss_dict_unscaled)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
@@ -112,26 +120,6 @@ def evaluate(model, criterion, dataset_name, data_loader, device):
                 batched_inputs[key] = batched_inputs[key].to(device)
         scene_ids = [x for x in batched_inputs["image_id"]]
         gt_instances = [x.to(device) for x in batched_inputs["instances"]]
-        """
-        Traceback (most recent call last):
-        File "/home/hai/master-thesis/RoomFormer/main_litept.py", line 569, in <module>
-            main(args)
-        File "/home/hai/master-thesis/RoomFormer/main_litept.py", line 488, in main
-            test_stats = evaluate(
-                        ^^^^^^^^^
-        File "/home/hai/.miniconda3/envs/sb/lib/python3.11/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
-            return func(*args, **kwargs)
-                ^^^^^^^^^^^^^^^^^^^^^
-        File "/home/hai/master-thesis/RoomFormer/engine_litept.py", line 113, in evaluate
-            room_targets = pad_gt_polys(gt_instances, model.num_queries_per_poly, device)
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        File "/home/hai/master-thesis/RoomFormer/util/poly_ops.py", line 55, in pad_gt_polys
-            for i, poly in enumerate(gt_inst.gt_masks.polygons):
-                                    ^^^^^^^^^^^^^^^^
-        File "/home/hai/master-thesis/RoomFormer/detectron2/structures/instances.py", line 65, in __getattr__
-            raise AttributeError("Cannot find field '{}' in the given Instances!".format(name))
-        AttributeError: Cannot find field 'gt_masks' in the given Instances!
-        """
         room_targets = pad_gt_polys(gt_instances, model.num_queries_per_poly, device)
 
         outputs = model(batched_inputs)
@@ -165,7 +153,7 @@ def evaluate(model, criterion, dataset_name, data_loader, device):
                 ]
                 evaluator = Evaluator_SceneCAD()
 
-            print(f"Running Evaluation for scene {scene_ids[i]}")
+            # print(f"Running Evaluation for scene {scene_ids[i]}")
 
             fg_mask_per_scene = fg_mask[i]
             pred_corners_per_scene = pred_corners[i]
@@ -297,7 +285,7 @@ def evaluate_floor(
                     )
                     density_map = np.repeat(density_map, 3, axis=2)
 
-                    gt_corner_map = np.zeros([256, 256, 3])
+                    _gt_corner_map = np.zeros([256, 256, 3])
                     for j, poly in enumerate(gt_inst.gt_masks.polygons):
                         corners = poly[0].reshape(-1, 2)
                         gt_polys.append(corners)
