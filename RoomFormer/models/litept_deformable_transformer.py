@@ -17,21 +17,19 @@ from .matcher import build_matcher
 from .roomformer import MLP, SetCriterion, _get_clones
 
 sys.path.append("LitePT")
-import importlib
 import sys
-from pathlib import Path
 
-from LitePT.litept.model import MLP as FFN
-from LitePT.litept.model import LitePT, PointSequential
+# from LitePT.litept.model import MLP as FFN
+from LitePT.litept.model import LitePT  #, PointSequential
 
 # 1. Add PillarNet-LTS directory to Python's path
-pillarnet_dir = Path("~/master-thesis/RoomFormer/PillarNet-LTS").expanduser().resolve()
-if str(pillarnet_dir) not in sys.path:
-    sys.path.insert(0, str(pillarnet_dir))
+# pillarnet_dir = Path("~/master-thesis/RoomFormer/PillarNet-LTS").expanduser().resolve()
+# if str(pillarnet_dir) not in sys.path:
+#     sys.path.insert(0, str(pillarnet_dir))
 
-# 2. Import standard det3d modules without the 'PillarNet-LTS.' prefix
-pillar_modules = importlib.import_module("det3d.ops.pillar_ops.pillar_modules")
-det3d_models = importlib.import_module("det3d.models")
+# # 2. Import standard det3d modules without the 'PillarNet-LTS.' prefix
+# pillar_modules = importlib.import_module("det3d.ops.pillar_ops.pillar_modules")
+# det3d_models = importlib.import_module("det3d.models")
 
 
 def build_feature_map_lexsort(

@@ -7,6 +7,7 @@ termcolor
 # torch
 torchmetrics
 plyfile
+ninja
 #torchvision
 
 # RoomFormer requirements
@@ -28,6 +29,6 @@ descartes
 
 # LitePT requirements
 einops
-psutils
+psutil
 addict
 colorhash
