@@ -6,6 +6,8 @@ submitit
 termcolor
 # torch
 torchmetrics
+plyfile
+ninja
 #torchvision
 
 # RoomFormer requirements
@@ -25,8 +27,8 @@ tqdm
 pycocotools
 descartes
 
-# DINO_BEV RF requirements
-open3d
-plyfile
-py360convert
-cuda-toolkit
+# LitePT requirements
+einops
+psutil
+addict
+colorhash

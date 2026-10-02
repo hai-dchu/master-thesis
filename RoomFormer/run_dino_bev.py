@@ -97,7 +97,7 @@ def config():
 
     a.add_argument(
         "--dino_bev_aggregation",
-        default="average",
+        default="random",
         help="aggregation strategy for multiple features 3D points",
     )
 
@@ -121,6 +121,7 @@ def build_batch_collator(mode="model"):
         batched_point_clouds = []
         batched_prj_points = []
         batched_masks = []
+        batched_mappings = []
 
         for x in batch:
             rooms = sorted(x["cubes"].keys())
@@ -128,37 +129,42 @@ def build_batch_collator(mode="model"):
             tmp_depth = []
             tmp_prj_points = []
             tmp_masks = []
+            tmp_mapping = []
             for room in rooms:
                 room_face = []
                 room_depth = []
                 room_prj_points = []
                 room_mask = []
+                room_mapping = []
                 for face in FACES:
                     room_face.append(torch.moveaxis(x["cubes"][room][face], -1, 0))
                     room_depth.append(torch.moveaxis(x["depths"][room][face], -1, 0))
                     room_prj_points.append(x["project_points"][room][face])
                     room_mask.append(x["masks"][room][face])
-                tmp_cube.append(torch.stack(room_face))
-                tmp_depth.append(torch.stack(room_depth))
-                tmp_prj_points.append(room_prj_points)
-                tmp_masks.append(room_mask)
+                    room_mapping.append(x["mappings"][room][face])  # = len(masks >= 0)
+                tmp_cube.append(torch.stack(room_face))  # (6,3,256,256)
+                tmp_depth.append(torch.stack(room_depth))  # (6,1,256,256)
+                # - map project points coordinate to mask positive item
+                tmp_mapping.append(room_mapping)  # (6,num_visible_points)
+                tmp_prj_points.append(room_prj_points)  # (6,num_visible_points,2)
+                tmp_masks.append(room_mask)  # (6,num_scene_points)
 
-            batched_room_faces.append(
-                torch.flatten(torch.stack(tmp_cube), start_dim=0, end_dim=1)
-            )
-            batched_room_depths.append(
-                torch.flatten(torch.stack(tmp_depth), start_dim=0, end_dim=1)
-            )
+            batched_room_faces.append(torch.cat(tmp_cube))
+            batched_room_depths.append(torch.cat(tmp_depth))
+            batched_mappings.append(tmp_mapping)
             batched_prj_points.append(tmp_prj_points)
             batched_masks.append(tmp_masks)
             batched_point_clouds.append(x["point_cloud"])
 
+        # batched_room_faces = torch.cat(batched_room_faces)
+        # batched_room_depths = torch.cat(batched_room_depths)
         return (
             batched_room_faces,
             batched_room_depths,
             batched_point_clouds,
             batched_prj_points,
             batched_masks,
+            batched_mappings,
         )
 
     def pca_batch_collator(batch):
@@ -180,6 +186,7 @@ def _batch_to(batch, device="cpu"):
         batched_point_clouds,
         batched_prj_points,
         batched_masks,
+        batched_mappings,
     ) = batch
     batched_room_faces = [
         faces.to(device, non_blocking=True) for faces in batched_room_faces
@@ -202,12 +209,17 @@ def _batch_to(batch, device="cpu"):
                     room_idx
                 ][face_idx].to(device, non_blocking=True)
 
+                batched_mappings[scene_idx][room_idx][face_idx] = batched_mappings[
+                    scene_idx
+                ][room_idx][face_idx].to(device, non_blocking=True)
+
     return (
         batched_room_faces,
         batched_room_depths,
         batched_point_clouds,
         batched_prj_points,
         batched_masks,
+        batched_mappings,
     )
 
 
@@ -294,9 +306,12 @@ def main(args):
             start = time.time()
             point_cloud, _, idxs = dataset._load_point_cloud(scene_id)
             record["point_cloud"] = point_cloud
-            prj_points, masks = dataset._load_mask_prj_points(scene_id, idxs)
+            prj_points, masks, mappings = dataset._load_mask_prj_points_mapping(
+                scene_id, idxs
+            )
             record["project_points"] = prj_points
             record["masks"] = masks
+            record["mappings"] = mappings
             record["cubes"] = dataset._load_cubes(scene_id)
             record["depths"] = dataset._load_depths(scene_id)
 
@@ -306,12 +321,14 @@ def main(args):
                 batched_point_clouds,
                 batched_prj_points,
                 batched_masks,
+                batched_mappings,
             ) = _batch_to(batch_collator([record]), device=device)
             scene_bev, scene_mask, scene_cnt, scene_agree = model(
                 batched_room_faces,
                 batched_masks,
                 batched_point_clouds,
                 batched_prj_points,
+                batched_mappings,
             )
             output_path = output_dir / mode / scene_id
             if args.verbose or args.dry_run:

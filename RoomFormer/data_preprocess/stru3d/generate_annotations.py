@@ -15,11 +15,13 @@
 # --------------------------------------------------------------------------------------------
 
 import argparse
-import shutil
 import json
 import os
+import shutil
 import sys
 
+sys.path.append("../.")
+from common_utils import export_density, read_scene_pc
 from stru3d_utils import (
     generate_coco_dict,
     generate_density,
@@ -27,9 +29,6 @@ from stru3d_utils import (
     parse_floor_plan_polys,
 )
 from tqdm import tqdm
-
-sys.path.append("../.")
-from common_utils import export_density, read_scene_pc
 
 with open("invalid_scenes.txt", "r") as file:
     INVALID_SCENES = file.read().split(",")
@@ -84,6 +83,12 @@ def config():
     ap.add_argument(
         "--verbose", default=False, action="store_true", help="use to enable printout"
     )
+    ap.add_argument(
+        "--dry_run",
+        default=False,
+        action="store_true",
+        help="for experiment, will not create/save anything",
+    )
     args = ap.parse_args()
     return args
 
@@ -126,19 +131,22 @@ def main(args):
 
     ### begin processing
     instance_id = 0
-    for scene in tqdm(scenes):
+    for scene in tqdm(sorted(scenes)):
         try:
             scene_path = os.path.join(data_root, scene)
             scene_id = scene.split("_")[-1]
 
             if int(scene_id) in INVALID_SCENES:
-                print("skip {}".format(scene))
+                print(f"skip {scene}")
                 continue
 
             # load pre-generated point cloud
             ply_path = os.path.join(scene_path, "point_cloud.ply")
             points = read_scene_pc(ply_path)
             xyz = points[:, :3]
+            
+            # TODO: Point cloud is currently in m, while coordinates in mm -> how to fix?
+            xyz = xyz * 1000 # m -> mm
 
             ### project point cloud to density map
             density, normalization_dict = generate_density(
@@ -171,8 +179,11 @@ def main(args):
                 density_out_dir = os.path.join(train_img_folder, scene)
                 if not os.path.exists(density_out_dir):
                     os.mkdir(density_out_dir)
-                export_density(density, density_out_dir, "density")
-                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+                if args.dry_run:
+                    print(density_out_dir)
+                else:
+                    export_density(density, density_out_dir, "density")
+                # shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
             ### val
             elif int(scene_id) >= 3000 and int(scene_id) < 3250:
@@ -181,8 +192,11 @@ def main(args):
                 density_out_dir = os.path.join(val_img_folder, scene)
                 if not os.path.exists(density_out_dir):
                     os.mkdir(density_out_dir)
-                export_density(density, density_out_dir, "density")
-                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+                if args.dry_run:
+                    print(density_out_dir)
+                else:
+                    export_density(density, density_out_dir, "density")
+                # shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
             ### test
             else:
@@ -191,8 +205,11 @@ def main(args):
                 density_out_dir = os.path.join(test_img_folder, scene)
                 if not os.path.exists(density_out_dir):
                     os.mkdir(density_out_dir)
-                export_density(density, density_out_dir, "density")
-                shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
+                if args.dry_run:
+                    print(density_out_dir)
+                else:
+                    export_density(density, density_out_dir, "density")
+                # shutil.copy(ply_path, os.path.join(density_out_dir, "point_cloud.ply"))
 
             if args.verbose:
                 print(scene_id)

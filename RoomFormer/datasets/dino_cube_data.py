@@ -165,31 +165,40 @@ class CubePolyDataset(torch.utils.data.Dataset):
 
         return points
 
-    def _load_mask_prj_points(self, scene_id: str, idxs: list[int]):
+    def _load_mask_prj_points_mapping(self, scene_id: str, idxs: list[int]):
         assert scene_id in self.scene_ids, "scene_id not found"
         rooms = os.listdir(os.path.join(self.data_root, scene_id))
         masks = {}
         points = {}
+        mappings = {}
         for room in sorted(rooms):
             path = os.path.join(self.data_root, scene_id, room)
             if not os.path.isdir(path):
                 continue
             tmp_masks = {}
             tmp_points = {}
+            tmp_mappings = {}
             for face in FACES:
                 # tmp_mask[face]
-                mask = torch.from_numpy(np.load(os.path.join(path, f"mask_{face}.npy")))
-                old_mask = torch.where(mask > 0)
-                plh = torch.zeros_like(mask)
-                plh[idxs] = 1
+                mask = torch.from_numpy(
+                    np.load(os.path.join(path, f"mask_{face}.npy"))
+                ).bool()
+                old_mask = torch.where(mask > 0)[0]
+                plh = torch.zeros_like(mask, dtype=bool)
+                plh[idxs] = True
+                plh &= mask
                 keep_points = plh[old_mask]
                 tmp_masks[face] = mask[idxs]
                 tmp_points[face] = torch.from_numpy(
                     np.load(os.path.join(path, f"prj_points_{face}.npy"))
                 )[keep_points]
+                tmp_mappings[face] = torch.argsort(torch.from_numpy(
+                    np.load(os.path.join(path, f"map_{face}.npy"))
+                )[keep_points])
             masks[room] = tmp_masks
             points[room] = tmp_points
-        return points, masks
+            mappings[room] = tmp_mappings
+        return points, masks, mappings
 
     def _point_cloud_augmentation(
         self,
@@ -249,9 +258,10 @@ class CubePolyDataset(torch.utils.data.Dataset):
         )
         # record["masks"] = self._load_masks(scene_id, idxs)
         # record["project_points"] = self._load_prj_points(scene_id)
-        prj_points, masks = self._load_mask_prj_points(scene_id, idxs)
+        prj_points, masks, mappings = self._load_mask_prj_points_mapping(scene_id, idxs)
         record["project_points"] = prj_points
         record["masks"] = masks
+        record["mappings"] = mappings
         record["cubes"] = self._load_cubes(scene_id)
         record["depths"] = self._load_depths(scene_id)
 
