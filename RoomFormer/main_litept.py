@@ -106,7 +106,7 @@ def _config_litept(parser):
     return parser
 
 
-def _config_deformable_(parser):
+def _config_deformable_transformer(parser):
     group = parser.add_argument_group("config_deformable_decoder")
     # DeformableTransformerDecoder
     group.add_argument(
@@ -167,6 +167,32 @@ def _config_deformable_(parser):
             1. static: same setting with DETR and Deformable-DETR, the query_pos is the same for all layers \
             2. sine: sine embedding from reference points (so if references points update, query_pos also \
             3. none: remove query_pos",
+    )
+
+    # backbone
+    group.add_argument(
+        "--backbone",
+        default="resnet50",
+        type=str,
+        help="Name of the convolutional backbone to use",
+    )
+    group.add_argument(
+        "--dilation",
+        action="store_true",
+        help="If true, we replace stride with dilation in the last convolutional block (DC5)",
+    )
+    group.add_argument(
+        "--position_embedding",
+        default="sine",
+        type=str,
+        choices=("sine", "learned"),
+        help="Type of positional embedding to use on top of the image features",
+    )
+    group.add_argument(
+        "--position_embedding_scale",
+        default=2 * np.pi,
+        type=float,
+        help="position / size * scale",
     )
 
     return parser
@@ -237,7 +263,7 @@ def config():
 
     # Just for the ease of comprehension
     parser = _config_litept(parser)
-    parser = _config_deformable_(parser)
+    parser = _config_deformable_transformer(parser)
     parser = _config_litept_deformable_transformer(parser)
     parser = _config_roomformer_criterion(parser)
 
@@ -434,7 +460,8 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["backbone.litept"]) and p.requires_grad
+                if match_name_keywords(n, ["litept_backbone.litept"])
+                and p.requires_grad
             ],
             "lr": args.lr_backbone if args.litept_checkpoint is not None else args.lr,
         },
@@ -442,8 +469,16 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["backbone"])
-                and not match_name_keywords(n, ["backbone.litept"])
+                if match_name_keywords(n, ["resnet_backbone.0"]) and p.requires_grad
+            ],
+            "lr": args.lr_backbone,
+        },
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if match_name_keywords(n, ["litept_backbone"])
+                and not match_name_keywords(n, ["litept_backbone.litept"])
                 and p.requires_grad
             ],
             "lr": args.lr * args.lr_litept_mlp_mult,
@@ -470,7 +505,7 @@ def main(args):
     # TODO: Write resume training weight here (not now)
     # Frozen LitePT for the first few batch
     if args.litept_checkpoint is not None:
-        model.backbone.litept.requires_grad_(False)
+        model.litept_backbone.litept.requires_grad_(False)
 
     flag = True
 
@@ -485,7 +520,7 @@ def main(args):
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if epoch > args.litept_start_epoch and flag and args.litept_enc_mode:
-            model.backbone.litept.requires_grad_(True)
+            model.litept_backbone.litept.requires_grad_(True)
             flag = False
 
         train_stats = train_one_epoch(

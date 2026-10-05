@@ -7,11 +7,18 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.init import constant_, normal_, uniform_, xavier_uniform_
+from util.misc import NestedTensor
 
+from models.ops.modules import MSDeformAttn
+
+from .backbone import build_backbone as build_resnet_backbone
 from .deformable_transformer import (
     DeformableTransformer,
     DeformableTransformerDecoder,
     DeformableTransformerDecoderLayer,
+    # DeformableTransformerEncoder,
+    # DeformableTransformerEncoderLayer,
 )
 from .matcher import build_matcher
 from .roomformer import MLP, SetCriterion, _get_clones
@@ -19,17 +26,7 @@ from .roomformer import MLP, SetCriterion, _get_clones
 sys.path.append("LitePT")
 import sys
 
-# from LitePT.litept.model import MLP as FFN
-from LitePT.litept.model import LitePT  #, PointSequential
-
-# 1. Add PillarNet-LTS directory to Python's path
-# pillarnet_dir = Path("~/master-thesis/RoomFormer/PillarNet-LTS").expanduser().resolve()
-# if str(pillarnet_dir) not in sys.path:
-#     sys.path.insert(0, str(pillarnet_dir))
-
-# # 2. Import standard det3d modules without the 'PillarNet-LTS.' prefix
-# pillar_modules = importlib.import_module("det3d.ops.pillar_ops.pillar_modules")
-# det3d_models = importlib.import_module("det3d.models")
+from LitePT.litept.model import LitePT  # , PointSequential
 
 
 def build_feature_map_lexsort(
@@ -120,21 +117,21 @@ def build_feature_map_density(
     batch_idxs = batch_idxs.long()
     num_points = coords.shape[0]
 
-    # grid_res = torch.tensor((grid_size, grid_size), device=device, dtype=coords.dtype)
+    grid_res = torch.tensor((grid_size, grid_size), device=device, dtype=coords.dtype)
 
-    # for b in range(batch_size):
-    #     idx = batch_idxs == b
-    #     pts = coords[idx]
-    #     min_c = pts.min(0).values
-    #     max_c = pts.max(0).values
-    #     span = (max_c - min_c).clamp_min(eps)
+    for b in range(batch_size):
+        idx = batch_idxs == b
+        pts = coords[idx]
+        min_c = pts.min(0).values
+        max_c = pts.max(0).values
+        span = (max_c - min_c).clamp_min(eps)
 
-    #     pad = 0.1 * span
-    #     min_c = min_c - pad
-    #     max_c = max_c + pad
-    #     padded_span = (max_c - min_c).clamp_min(eps)
+        pad = 0.1 * span
+        min_c = min_c - pad
+        max_c = max_c + pad
+        padded_span = (max_c - min_c).clamp_min(eps)
 
-    #     coords[idx] = (pts - min_c[None]) / padded_span[None] * grid_res[None]
+        coords[idx] = (pts - min_c[None]) / padded_span[None] * grid_res[None]
 
     x = coords[:, 0].round().long().clamp_(0, grid_size - 1)
     y = coords[:, 1].round().long().clamp_(0, grid_size - 1)
@@ -152,16 +149,21 @@ def build_feature_map_density(
         0, linear_idx, torch.ones(num_points, 1, device=device, dtype=feats.dtype)
     )
 
-    mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg, not sum
-    log_count = torch.log1p(count_buf)  # explicit density channel, not normalized away
+    # mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
+    log_count = torch.log1p(count_buf)  # explicit density channel
 
-    feat_map = torch.cat([feat_buf, log_count], dim=-1)
+    # feat_map = torch.cat([feat_buf], dim=-1)
     feat_map = (
-        feat_map.view(batch_size, grid_size, grid_size, -1)
+        feat_buf.view(batch_size, grid_size, grid_size, -1)
         .permute(0, 3, 1, 2)
         .contiguous()
     )
-    return feat_map
+    density = (
+        log_count.view(batch_size, grid_size, grid_size, -1)
+        .permute(0, 3, 1, 2)
+        .contiguous()
+    )
+    return feat_map, density
 
 
 def get_valid_ratio(mask: torch.Tensor) -> torch.Tensor:
@@ -211,14 +213,12 @@ class LitePTBackbone(nn.Module):
         enc_mlp_ratio,
         out_channels=16,
         grid_size=256,
-        max_k=16,
     ):
         super().__init__()
         self.litept = litept
 
         self.enc_out_channels = enc_out_channels
         self.grid_size = grid_size
-        self.max_k = max_k
         self.embed_dim = out_channels
         self.out_channels = out_channels
 
@@ -226,7 +226,14 @@ class LitePTBackbone(nn.Module):
 
         conv = [
             nn.Sequential(
-                nn.Conv2d(self.enc_out_channels + 1, 64, kernel_size=7, stride=2, padding=3, bias=False),
+                nn.Conv2d(
+                    self.enc_out_channels,
+                    64,
+                    kernel_size=7,
+                    stride=2,
+                    padding=3,
+                    bias=False,
+                ),
                 nn.GroupNorm(16, 64),
                 # Dense2DBasicBlock(64),
                 # Dense2DBasicBlock(64),
@@ -253,11 +260,16 @@ class LitePTBackbone(nn.Module):
 
         # Possibly freezing LitePT?
 
+    # TODO: 
+    # - Difference between using full LitePT (encoder + decoder) vs encoder only
+    # - Try incorporating S2C operation on voxelized feature cloud (https://xieenze.github.io/projects/m2bev/) - No source
+    # - Compare S2C approach vs sum approach (ours)
+    # - But for now lets try linear layer first
     def forward(self, x):
         out = self.litept(x)
         coords = out["coord"]
 
-        feat = build_feature_map_density(
+        feat, density = build_feature_map_density(
             coords=coords,
             feats=out.feat,
             batch_idxs=out.batch,
@@ -282,7 +294,129 @@ class LitePTBackbone(nn.Module):
             else:
                 feat = conv_out
 
-        return feats
+        return feats, density
+
+
+class DeformableTransformerWrapper(DeformableTransformer):
+    def __init__(
+        self,
+        d_model=256,
+        nhead=8,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        dim_feedforward=1024,
+        dropout=0.1,
+        activation="relu",
+        poly_refine=True,
+        return_intermediate_dec=False,
+        aux_loss=False,
+        num_feature_levels=4,
+        dec_n_points=4,
+        enc_n_points=4,
+        query_pos_type="none",
+    ):
+        super().__init__(
+            d_model=d_model,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            poly_refine=poly_refine,
+            return_intermediate_dec=return_intermediate_dec,
+            aux_loss=aux_loss,
+            num_feature_levels=num_feature_levels,
+            dec_n_points=dec_n_points,
+            enc_n_points=enc_n_points,
+            query_pos_type=query_pos_type,
+        )
+
+        self.proj = nn.Linear(d_model * 2, d_model)
+
+    def forward(
+        self,
+        litept_srcs,
+        resnet_srcs,
+        masks,
+        pos_embeds,
+        query_embed=None,
+        tgt=None,
+        tgt_masks=None,
+    ):
+        """
+        Separate srcs from litept (goes into decoder) and srcs from resnet (goes into encoder)
+        """
+        assert query_embed is not None
+        # srcs from litept and resnet must be of the same shape
+
+        litept_src_flatten = []
+        resnet_src_flatten = []
+        mask_flatten = []
+        lvl_pos_embed_flatten = []
+        spatial_shapes = []
+        for lvl, (litept_src, resnet_src, mask, pos_embed) in enumerate(
+            zip(litept_srcs, resnet_srcs, masks, pos_embeds)
+        ):
+            bs, _, h, w = litept_src.shape
+            spatial_shape = (h, w)
+            spatial_shapes.append(spatial_shape)
+            litept_src = litept_src.flatten(2).transpose(1, 2)
+            resnet_src = resnet_src.flatten(2).transpose(1, 2)
+            mask = mask.flatten(1)
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)
+            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
+            lvl_pos_embed_flatten.append(lvl_pos_embed)
+            litept_src_flatten.append(litept_src)
+            resnet_src_flatten.append(resnet_src)
+            mask_flatten.append(mask)
+        resnet_src_flatten = torch.cat(resnet_src_flatten, 1)
+        litept_src_flatten = torch.cat(litept_src_flatten, 1)
+        mask_flatten = torch.cat(mask_flatten, 1)
+        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
+        spatial_shapes = torch.as_tensor(
+            spatial_shapes, dtype=torch.long, device=resnet_src_flatten.device
+        )
+        level_start_index = torch.cat(
+            (spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1])
+        )
+        valid_ratios = torch.stack([get_valid_ratio(m) for m in masks], 1)
+
+        _resnet_memory = self.encoder(
+            resnet_src_flatten,
+            spatial_shapes,
+            level_start_index,
+            valid_ratios,
+            lvl_pos_embed_flatten,
+            mask_flatten,
+        )
+        bs, _, _ = litept_src_flatten.shape
+
+        # TODO: Add some (learnable) linear layer to join the memory from resnet and litept
+        shared_memory = torch.concat([litept_src_flatten, _resnet_memory], axis=2).reshape((-1, self.d_model * 2))
+        shared_memory = self.proj(shared_memory).reshape((bs, -1, self.d_model))
+        
+        # Uncomment to replicate RoomFormer
+        # shared_memory = _resnet_memory
+
+        query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+        tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+        reference_points = query_embed.sigmoid()
+        init_reference_out = reference_points
+
+        hs, inter_references, inter_classes = self.decoder(
+            tgt=tgt,
+            reference_points=reference_points,
+            src=shared_memory,
+            src_flatten=None,
+            src_spatial_shapes=spatial_shapes,
+            src_level_start_index=level_start_index,
+            src_valid_ratios=valid_ratios,
+            query_pos=query_embed,
+            src_padding_mask=mask_flatten,
+        )
+
+        return hs, init_reference_out, inter_references, inter_classes
 
 
 class DeformableTransformerDecoderWrapper(nn.Module):
@@ -382,51 +516,6 @@ class DeformableTransformerDecoderWrapper(nn.Module):
         return hs, init_reference_out, inter_references, inter_classes
 
 
-class PositionEmbeddingSine(nn.Module):
-    """
-    This is a more standard version of the position embedding, very similar to the one
-    used by the Attention is all you need paper, generalized to work on images.
-    """
-
-    def __init__(
-        self, num_pos_feats=64, temperature=10000, normalize=False, scale=None
-    ):
-        super().__init__()
-        self.num_pos_feats = num_pos_feats
-        self.temperature = temperature
-        self.normalize = normalize
-        if scale is not None and normalize is False:
-            raise ValueError("normalize should be True if scale is passed")
-        if scale is None:
-            scale = 2 * math.pi
-        self.scale = scale
-
-    def forward(self, mask):
-        assert mask is not None
-        device = mask.device
-        not_mask = ~mask
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
-        x_embed = not_mask.cumsum(2, dtype=torch.float32)
-        if self.normalize:
-            eps = 1e-6
-            y_embed = (y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale
-            x_embed = (x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale
-
-        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=device)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
-
-        pos_x = x_embed[:, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = torch.stack(
-            (pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4
-        ).flatten(3)
-        pos_y = torch.stack(
-            (pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4
-        ).flatten(3)
-        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
-        return pos
-
-
 class LitePTDeformableTransformer(nn.Module):
     """
     Equivalent to RoomFormer class
@@ -434,8 +523,8 @@ class LitePTDeformableTransformer(nn.Module):
 
     def __init__(
         self,
-        backbone: nn.Module,
-        position_embedding: nn.Module,
+        litept_backbone: nn.Module,
+        resnet_backbone: nn.Module,
         transformer: nn.Module,
         num_classes: int,
         num_queries: int,
@@ -447,8 +536,8 @@ class LitePTDeformableTransformer(nn.Module):
         semantic_classes: int = -1,
     ):
         super().__init__()
-        self.backbone = backbone
-        self.position_embedding = position_embedding
+        self.litept_backbone = litept_backbone
+        self.resnet_backbone = resnet_backbone
         self.transformer = transformer
         self.num_queries = num_queries
         self.num_polys = num_polys
@@ -459,9 +548,33 @@ class LitePTDeformableTransformer(nn.Module):
 
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.coords_embed = MLP(hidden_dim, hidden_dim, 2, 3)
+        self.num_feature_levels = num_feature_levels
 
         self.query_embed = nn.Embedding(num_queries, 2)
         self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
+
+        if num_feature_levels > 1:
+            num_backbone_outs = len(resnet_backbone.strides)
+            input_proj_list = []
+            for _ in range(num_backbone_outs):
+                in_channels = resnet_backbone.num_channels[_]
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+            for _ in range(num_feature_levels - num_backbone_outs):
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+                in_channels = hidden_dim
+            self.input_proj = nn.ModuleList(input_proj_list)
+        else:
+            self.input_proj = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(resnet_backbone.num_channels[0], hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                )])
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -509,27 +622,33 @@ class LitePTDeformableTransformer(nn.Module):
         - offset: mark end of each point cloud in batch
         - feat: [rgb, normal] stacked rgb + normal values for each point
         """
-        feats = self.backbone(samples)
-        # feats = [feat["conv4"], feat["conv5"]]
-        bs = feats[0].shape[0]
-        device = feats[0].device
+        litept_feats, density = self.litept_backbone(samples)
+        bs = litept_feats[0].shape[0]
+        device = litept_feats[0].device
+
+        # density = torch.stack(samples['image']).to(device)
 
         tgt = self.tgt_embed.weight
         query_embed = self.query_embed.weight
         # query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
         # tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
 
-        mask = torch.zeros(
+        _mask = torch.zeros(
             bs,
             256,
             256,
             dtype=torch.bool,
             device=device,
         )
+
+        nested_density = NestedTensor(density, _mask)
+        resnet_srcs, pos = self.resnet_backbone(nested_density)
+        # Probably use these position embedding + mask for both
+
         # mask = torch.zeros(
         #     bs,
-        #     feats[0].shape[-2],
-        #     feats[0].shape[-1],
+        #     litept_feats[0].shape[-2],
+        #     litept_feats[0].shape[-1],
         #     dtype=torch.bool,
         #     device=device
         # )
@@ -538,25 +657,43 @@ class LitePTDeformableTransformer(nn.Module):
         # TODO: Currently this is just a placeholder.
         # Maybe add some convolution to replace feat interpolation?
         masks = []
-        pos = []
-        for ifeat in feats:
-            # ifeat = F.interpolate(feat, size=size, mode="bilinear")
-            size = ifeat.shape[-2:]
-            imask = (
-                F.interpolate(mask[None].float(), size=size, mode="nearest")
-                .squeeze(1)
-                .bool()
-            )[0]
-            ipos = self.position_embedding(imask)
+        resnet_feats = []
+        # for ifeat in litept_feats:
+        #     # ifeat = F.interpolate(feat, size=size, mode="bilinear")
+        #     size = ifeat.shape[-2:]
+        #     imask = (
+        #         F.interpolate(mask[None].float(), size=size, mode="nearest")
+        #         .squeeze(1)
+        #         .bool()
+        #     )[0]
 
-            # feats.append(ifeat)
-            masks.append(imask)
-            pos.append(ipos)
+        #     # litept_feats.append(ifeat)
+        #     masks.append(imask)
+
+        for l, feat in enumerate(resnet_srcs):
+            src, mask = feat.decompose()
+            resnet_feats.append(self.input_proj[l](src))
+            masks.append(mask)
+            assert mask is not None
+        if self.num_feature_levels > len(resnet_feats):
+            _len_srcs = len(resnet_feats)
+            for l in range(_len_srcs, self.num_feature_levels):
+                if l == _len_srcs:
+                    src = self.input_proj[l](resnet_srcs[-1].tensors)
+                else:
+                    src = self.input_proj[l](resnet_feats[-1])
+                m = _mask
+                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                pos_l = self.resnet_backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                resnet_feats.append(src)
+                masks.append(mask)
+                pos.append(pos_l)
 
         hs, _init_reference, inter_references, inter_classes = self.transformer(
-            feats,
+            litept_feats,
+            resnet_feats,
             masks,
-            # pos,
+            pos,
             query_embed,
             tgt,
         )
@@ -648,39 +785,23 @@ def build_litept(args):
 def build(args, train=True):
     litept = build_litept(args)
 
-    backbone = LitePTBackbone(
+    litept_out_channels = (
+        72 if not args.litept_enc_mode else args.litept_enc_channels[-1]
+    )
+
+    resnet_backbone = build_resnet_backbone(args)
+
+    litept_backbone = LitePTBackbone(
         litept=litept,
-        enc_out_channels=72
-        if not args.litept_enc_mode
-        else args.litept_enc_channels[-1],
+        enc_out_channels=litept_out_channels,
         enc_mlp_ratio=args.litept_mlp_ratio,
         out_channels=args.litept_mlp_out_channels,
         grid_size=args.litept_grid_size,
-        max_k=args.litept_max_keep,
     )
 
-    N_steps = args.hidden_dim // 2
-    position_embedding = PositionEmbeddingSine(N_steps, normalize=True)
-
-    transformer = DeformableTransformerDecoderWrapper(
-        d_model=args.hidden_dim,
-        nhead=args.nheads,
-        num_decoder_layers=args.dec_layers,
-        dim_feedforward=args.dim_feedforward,
-        dropout=args.dropout,
-        activation="relu",
-        poly_refine=args.with_poly_refine,
-        return_intermediate_dec=True,
-        aux_loss=args.aux_loss,
-        num_feature_levels=args.num_feature_levels,
-        dec_n_points=args.dec_n_points,
-        query_pos_type=args.query_pos_type,
-    )
-
-    # transformer = DeformableTransformer(
+    # transformer = DeformableTransformerDecoderWrapper(
     #     d_model=args.hidden_dim,
     #     nhead=args.nheads,
-    #     num_encoder_layers=args.enc_layers,
     #     num_decoder_layers=args.dec_layers,
     #     dim_feedforward=args.dim_feedforward,
     #     dropout=args.dropout,
@@ -690,14 +811,30 @@ def build(args, train=True):
     #     aux_loss=args.aux_loss,
     #     num_feature_levels=args.num_feature_levels,
     #     dec_n_points=args.dec_n_points,
-    #     enc_n_points=args.dec_n_points,
     #     query_pos_type=args.query_pos_type,
     # )
 
+    transformer = DeformableTransformerWrapper(
+        d_model=args.hidden_dim,
+        nhead=args.nheads,
+        num_encoder_layers=args.enc_layers,
+        num_decoder_layers=args.dec_layers,
+        dim_feedforward=args.dim_feedforward,
+        dropout=args.dropout,
+        activation="relu",
+        poly_refine=args.with_poly_refine,
+        return_intermediate_dec=True,
+        aux_loss=args.aux_loss,
+        num_feature_levels=args.num_feature_levels,
+        dec_n_points=args.dec_n_points,
+        enc_n_points=args.dec_n_points,
+        query_pos_type=args.query_pos_type,
+    )
+
     num_classes = 1
     model = LitePTDeformableTransformer(
-        backbone,
-        position_embedding,
+        litept_backbone,
+        resnet_backbone,
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
