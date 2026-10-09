@@ -12,7 +12,7 @@ from torch import nn
 from util.misc import NestedTensor
 
 # from models.ops.modules import MSDeformAttn
-from .backbone import build_backbone as build_resnet_backbone
+# from .backbone import build_backbone as build_resnet_backbone
 from .deformable_transformer import (
     DeformableTransformer,
     DeformableTransformerDecoder,
@@ -21,6 +21,7 @@ from .deformable_transformer import (
     # DeformableTransformerEncoderLayer,
 )
 from .matcher import build_matcher
+from .position_encoding import build_position_encoding
 from .roomformer import MLP, SetCriterion, _get_clones
 
 sys.path.append("LitePT")
@@ -149,10 +150,10 @@ def build_feature_map_density(
         0, linear_idx, torch.ones(num_points, 1, device=device, dtype=feats.dtype)
     )
 
-    # mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
+    mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
     log_count = torch.log1p(count_buf)  # explicit density channel
 
-    feat_map = torch.cat([feat_buf, log_count], dim=-1)
+    feat_map = torch.cat([mean_feat, log_count], dim=-1)
     feat_map = (
         feat_map.view(batch_size, grid_size, grid_size, -1)
         .permute(0, 3, 1, 2)
@@ -259,7 +260,7 @@ class LitePTBackbone(nn.Module):
         #                 nn.GroupNorm(32, hidden_dim),
         #             )
         #         ]
-        #     )        
+        #     )
 
         channels = [64, 128, 256, 256, 256, 256]
 
@@ -274,7 +275,8 @@ class LitePTBackbone(nn.Module):
                     padding=3,
                     bias=False,
                 ),
-                nn.LayerNorm([64, height, width]),
+                nn.GroupNorm(32, 64),
+                # nn.LayerNorm([64, height, width]),
                 # Dense2DBasicBlock(64),
                 # Dense2DBasicBlock(64),
                 nn.ReLU(),
@@ -288,7 +290,8 @@ class LitePTBackbone(nn.Module):
                     nn.Conv2d(
                         channels[i], channels[i + 1], 3, 2, padding=1, bias=False
                     ),
-                    nn.LayerNorm([channels[i + 1], height, width]),
+                    nn.GroupNorm(32, channels[i + 1]),
+                    # nn.LayerNorm([channels[i + 1], height, width]),
                     # nn.BatchNorm2d(channels[i+1], momentum=0.01, eps=1e-3),
                     nn.ReLU(),
                     Dense2DBasicBlock(channels[i + 1]),
@@ -344,7 +347,7 @@ class LitePTBackbone(nn.Module):
         #     feat, mask = m.decompose()
         #     feats.append(self.input_proj[l](feat))
         #     masks.append(mask)
-        
+
         # if self.num_feature_levels > len(memory):
         #     _len_srcs = len(memory)
         #     for l in range(_len_srcs, self.num_feature_levels):
@@ -361,7 +364,7 @@ class LitePTBackbone(nn.Module):
         #         masks.append(mask)
         #         pos.append(pos_l)
 
-        return feats, density # masks, pos, density
+        return feats, density  # masks, pos, density
 
 
 class DeformableTransformerWrapper(DeformableTransformer):
@@ -595,6 +598,7 @@ class LitePTDeformableTransformer(nn.Module):
     def __init__(
         self,
         litept_backbone: nn.Module,
+        position_embedding: nn.Module,
         # resnet_backbone: nn.Module,
         transformer: nn.Module,
         num_classes: int,
@@ -620,6 +624,7 @@ class LitePTDeformableTransformer(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.coords_embed = MLP(hidden_dim, hidden_dim, 2, 3)
         self.num_feature_levels = num_feature_levels
+        self.position_embedding = position_embedding
 
         self.query_embed = nn.Embedding(num_queries, 2)
         self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
@@ -735,7 +740,7 @@ class LitePTDeformableTransformer(nn.Module):
         #     device=device
         # )
         # pos = self.position_embedding(_mask)
-        # pos = []
+        pos = []
 
         # TODO: Currently this is just a placeholder.
         # Maybe add some convolution to replace feat interpolation?
@@ -749,11 +754,11 @@ class LitePTDeformableTransformer(nn.Module):
                 .squeeze(1)
                 .bool()
             )[0]
-            # ipos = self.position_embedding(imask)
+            ipos = self.position_embedding(NestedTensor(ifeat, imask))
 
             # litept_feats.append(ifeat)
             masks.append(imask)
-            # pos.append(ipos)
+            pos.append(ipos)
 
         # for l, feat in enumerate(resnet_srcs):
         #     src, mask = feat.decompose()
@@ -780,7 +785,7 @@ class LitePTDeformableTransformer(nn.Module):
             litept_feats,
             # resnet_feats,
             masks,
-            # pos,
+            pos,
             query_embed,
             tgt,
         )
@@ -877,6 +882,7 @@ def build(args, train=True):
     )
 
     # resnet_backbone = build_resnet_backbone(args)
+    position_embedding = build_position_encoding(args)
 
     litept_backbone = LitePTBackbone(
         litept=litept,
@@ -887,25 +893,9 @@ def build(args, train=True):
         grid_size=args.litept_grid_size,
     )
 
-    transformer = DeformableTransformerDecoderWrapper(
-        d_model=args.hidden_dim,
-        nhead=args.nheads,
-        num_decoder_layers=args.dec_layers,
-        dim_feedforward=args.dim_feedforward,
-        dropout=args.dropout,
-        activation="relu",
-        poly_refine=args.with_poly_refine,
-        return_intermediate_dec=True,
-        aux_loss=args.aux_loss,
-        num_feature_levels=args.num_feature_levels,
-        dec_n_points=args.dec_n_points,
-        query_pos_type=args.query_pos_type,
-    )
-
-    # transformer = DeformableTransformer(
+    # transformer = DeformableTransformerDecoderWrapper(
     #     d_model=args.hidden_dim,
     #     nhead=args.nheads,
-    #     num_encoder_layers=args.enc_layers,
     #     num_decoder_layers=args.dec_layers,
     #     dim_feedforward=args.dim_feedforward,
     #     dropout=args.dropout,
@@ -915,13 +905,30 @@ def build(args, train=True):
     #     aux_loss=args.aux_loss,
     #     num_feature_levels=args.num_feature_levels,
     #     dec_n_points=args.dec_n_points,
-    #     enc_n_points=args.dec_n_points,
     #     query_pos_type=args.query_pos_type,
     # )
+
+    transformer = DeformableTransformer(
+        d_model=args.hidden_dim,
+        nhead=args.nheads,
+        num_encoder_layers=args.enc_layers,
+        num_decoder_layers=args.dec_layers,
+        dim_feedforward=args.dim_feedforward,
+        dropout=args.dropout,
+        activation="relu",
+        poly_refine=args.with_poly_refine,
+        return_intermediate_dec=True,
+        aux_loss=args.aux_loss,
+        num_feature_levels=args.num_feature_levels,
+        dec_n_points=args.dec_n_points,
+        enc_n_points=args.dec_n_points,
+        query_pos_type=args.query_pos_type,
+    )
 
     num_classes = 1
     model = LitePTDeformableTransformer(
         litept_backbone,
+        position_embedding,
         # resnet_backbone,
         transformer,
         num_classes=num_classes,

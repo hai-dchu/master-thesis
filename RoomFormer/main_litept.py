@@ -483,8 +483,16 @@ def main(args):
                 p
                 for n, p in model.named_parameters()
                 if match_name_keywords(n, ["litept_backbone"])
-                and match_name_keywords(n, ["sampling_offsets"])
                 and not match_name_keywords(n, ["litept_backbone.litept"])
+                and p.requires_grad
+            ],
+            "lr": args.lr,
+        },
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if match_name_keywords(n, ["sampling_offsets"])
                 and p.requires_grad
             ],
             "lr": args.lr * args.lr_litept_mlp_mult,
@@ -515,7 +523,7 @@ def main(args):
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
-        print(f"{param_state} {n}")
+        print(f"{param_state} {n}: {p.numel()}")
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"number of params: {n_parameters}")

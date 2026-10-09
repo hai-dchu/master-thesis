@@ -214,9 +214,9 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         path = coco.loadImgs(img_id)[0]["file_name"]
 
         # get random rotations and flip
-        _hor = np.random.randn() > 0.5
-        _ver = np.random.randn() > 0.5
-        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0])
+        _hor = (self.mode == "train") and np.random.rand() > 0.5
+        _ver = (self.mode == "train") and np.random.rand() > 0.5
+        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0]) if self.mode == "train" else 0.0
         record = self.prepare(
             img_id, path, target, horizontal=_hor, vertical=_ver, rotate=_rotate
         )
