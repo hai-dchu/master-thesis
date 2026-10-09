@@ -99,7 +99,7 @@ def _config_litept(parser):
     )
     group.add_argument(
         "--litept_start_epoch",
-        default=10,
+        default=0,
         type=int,
         help="freeze litept until this epoch",
     )
@@ -274,6 +274,7 @@ def config():
     parser.add_argument("--batch_size", default=10, type=int)
     parser.add_argument("--epochs", default=500, type=int)
     parser.add_argument("--weight_decay", default=1e-4, type=float)
+    parser.add_argument("--lr_drop", default=[400], type=list)
     parser.add_argument(
         "--clip_max_norm", default=0.1, type=float, help="gradient clipping max norm"
     )
@@ -452,7 +453,8 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if not match_name_keywords(n, ["backbone"]) and p.requires_grad
+                if not match_name_keywords(n, ["litept_backbone", "sampling_offsets"])
+                and p.requires_grad
             ],
             "lr": args.lr,
         },
@@ -469,7 +471,10 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["resnet_backbone.0"]) and p.requires_grad
+                if match_name_keywords(
+                    n, ["litept_backbone.resnet_backbone", "litept_backbone.input_proj"]
+                )
+                and p.requires_grad
             ],
             "lr": args.lr_backbone,
         },
@@ -478,6 +483,7 @@ def main(args):
                 p
                 for n, p in model.named_parameters()
                 if match_name_keywords(n, ["litept_backbone"])
+                and match_name_keywords(n, ["sampling_offsets"])
                 and not match_name_keywords(n, ["litept_backbone.litept"])
                 and p.requires_grad
             ],
@@ -496,18 +502,16 @@ def main(args):
     #     steps_per_epoch=len(data_loader_train),
     # )
 
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, [400]
-    )  # args.lr_drop)
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.lr_drop)
 
     output_dir = Path(args.output_dir)
 
     # TODO: Write resume training weight here (not now)
     # Frozen LitePT for the first few batch
-    if args.litept_checkpoint is not None:
-        model.litept_backbone.litept.requires_grad_(False)
+    # if args.litept_checkpoint is not None:
+    #     model.litept_backbone.litept.requires_grad_(False)
 
-    flag = True
+    # flag = True
 
     for n, p in model.named_parameters():
         param_state = "[Active]" if p.requires_grad else ""
@@ -519,9 +523,10 @@ def main(args):
     print("Start training")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        if epoch > args.litept_start_epoch and flag and args.litept_enc_mode:
-            model.litept_backbone.litept.requires_grad_(True)
-            flag = False
+        # if epoch > args.litept_start_epoch and flag and args.litept_enc_mode:
+        #     # for n, p in model.named_parameters():
+        #     model.litept_backbone.litept.requires_grad_(True)
+        #     flag = False
 
         train_stats = train_one_epoch(
             model,
