@@ -751,9 +751,12 @@ class LitePTDeformableTransformer(nn.Module):
             size = ifeat.shape[-2:]
             imask = (
                 F.interpolate(_mask[None].float(), size=size, mode="nearest")
-                .squeeze(1)
                 .bool()
             )[0]
+
+            # Adapt cases where batch=1
+            if imask.shape[0] != 1:
+                imask = imask.squeeze(1)
             ipos = self.position_embedding(NestedTensor(ifeat, imask))
 
             # litept_feats.append(ifeat)

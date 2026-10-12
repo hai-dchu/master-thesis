@@ -60,10 +60,8 @@ def train_one_epoch(
 
         # torch.cuda.profiler.start()
         outputs = model(batched_inputs)
-        torch.cuda.synchronize()
         # torch.cuda.profiler.stop()
         loss_dict = criterion(outputs, room_targets)
-        torch.cuda.synchronize()
         weight_dict = criterion.weight_dict
         losses = sum(
             loss_dict[k] * weight_dict[k] for k in loss_dict if k in weight_dict
@@ -83,9 +81,7 @@ def train_one_epoch(
             sys.exit(1)
 
         optimizer.zero_grad()
-        torch.cuda.synchronize()
         losses.backward()
-        torch.cuda.synchronize()
         # lr_scheduler.step()
 
         if max_norm > 0:
@@ -270,9 +266,12 @@ def evaluate_floor(
         os.mkdir(output_dir)
 
     for batched_inputs in data_loader:
-        samples = [x["image"].to(device) for x in batched_inputs]
-        scene_ids = [x["image_id"] for x in batched_inputs]
-        gt_instances = [x["instances"].to(device) for x in batched_inputs]
+        for key in ["coord", "grid_coord", "grid_size", "offset", "feat"]:
+            if isinstance(batched_inputs[key], torch.Tensor):
+                batched_inputs[key] = batched_inputs[key].to(device)
+        samples = [x for x in batched_inputs["image"]]
+        scene_ids = [x for x in batched_inputs["image_id"]]
+        gt_instances = [x.to(device) for x in batched_inputs["instances"]]
 
         # draw GT map
         if plot_gt:
@@ -317,7 +316,7 @@ def evaluate_floor(
                         gt_sem_rich, gt_sem_rich_path, prec=1, rec=1
                     )
 
-        outputs = model(samples)
+        outputs = model(batched_inputs)
         pred_logits = outputs["pred_logits"]
         pred_corners = outputs["pred_coords"]
         fg_mask = torch.sigmoid(pred_logits) > 0.5  # select valid corners

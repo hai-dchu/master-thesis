@@ -638,7 +638,7 @@ if __name__ == "__main__":
         "LitePT Deformable Transformer training script", parents=[config()]
     )
     args = parser.parse_args()
-    now = datetime.datetime.now()  # noqa: DTZ005
+    now = datetime.datetime.now()
     run_id = now.strftime("%Y-%m-%d-%H-%M-%S")
     args.run_name = run_id + "_" + args.job_name
     args.output_dir = os.path.join(args.output_dir, args.run_name)
