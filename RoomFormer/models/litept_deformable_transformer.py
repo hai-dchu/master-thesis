@@ -209,7 +209,7 @@ class Dense2DBasicBlock(nn.Module):
 class LitePTBackbone(nn.Module):
     def __init__(
         self,
-        litept: nn.Module,
+        # litept: nn.Module,
         # resnet_backbone: nn.Module,
         enc_out_channels,
         enc_mlp_ratio,
@@ -217,7 +217,7 @@ class LitePTBackbone(nn.Module):
         grid_size=256,
     ):
         super().__init__()
-        self.litept = litept
+        # self.litept = litept
 
         self.enc_out_channels = enc_out_channels
         self.grid_size = grid_size
@@ -268,7 +268,7 @@ class LitePTBackbone(nn.Module):
         conv = [
             nn.Sequential(
                 nn.Conv2d(
-                    self.enc_out_channels + 1,
+                    1,
                     64,
                     kernel_size=7,
                     stride=2,
@@ -309,18 +309,20 @@ class LitePTBackbone(nn.Module):
     # - Compare S2C approach vs sum approach (ours)
     # - But for now lets try linear layer first
     def forward(self, x):
-        out = self.litept(x)
-        coords = out["coord"]
+        # out = self.litept(x)
+        # coords = out["coord"]
 
-        feat, density = build_feature_map_density(
-            coords=coords,
-            feats=out.feat,
-            batch_idxs=out.batch,
-            batch_size=int(out.batch.max().item() + 1),
-            grid_size=self.grid_size,
-            embed_dim=self.enc_out_channels,
-        )
-        # feat = torch.stack(x["image"]).to(torch.device("cuda"))
+        # feat, density = build_feature_map_density(
+        #     coords=coords,
+        #     feats=out.feat,
+        #     batch_idxs=out.batch,
+        #     batch_size=int(out.batch.max().item() + 1),
+        #     grid_size=self.grid_size,
+        #     embed_dim=self.enc_out_channels,
+        # )
+
+        feat = torch.stack(x["image"]).to(torch.device("cuda"))
+        density = []
 
         feats = []
         for i, layer in enumerate(self.conv):
@@ -878,7 +880,7 @@ def build_litept(args):
 
 
 def build(args, train=True):
-    litept = build_litept(args)
+    # litept = build_litept(args)
 
     litept_out_channels = (
         72 if not args.litept_enc_mode else args.litept_enc_channels[-1]
@@ -888,7 +890,7 @@ def build(args, train=True):
     position_embedding = build_position_encoding(args)
 
     litept_backbone = LitePTBackbone(
-        litept=litept,
+        # litept=litept,
         # resnet_backbone=resnet_backbone,
         enc_out_channels=litept_out_channels,
         enc_mlp_ratio=args.litept_mlp_ratio,
