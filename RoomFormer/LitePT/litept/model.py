@@ -758,7 +758,7 @@ class LitePT(PointModule):
         assert self.enc_mode or self.num_stages == len(dec_patch_size) + 1
 
         # norm layers
-        bn_layer = partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
+        bn_layer = nn.LayerNorm # partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01)
         ln_layer = nn.LayerNorm
 
         # activation layers

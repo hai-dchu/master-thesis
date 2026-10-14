@@ -38,7 +38,7 @@ def resort_corners(corners):
     if not is_clockwise(corners_sorted[:, :2].tolist()):
         corners_sorted[1:] = np.flip(corners_sorted[1:], 0)
 
-    return corners
+    return corners_sorted
 
 
 def export_density(density_map, out_folder, scene_id):

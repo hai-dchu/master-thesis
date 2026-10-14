@@ -29,8 +29,6 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         data_dir: str,
         transforms,
         point_transforms,
-        aug_rotate: bool = False,
-        aug_flip: bool = False,
         semantic_classes: int = -1,
         mode="train",
     ):
@@ -43,8 +41,8 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         self.data_dir = os.path.abspath(data_dir)
         self.data_root = os.path.join(self.data_dir, mode)
 
-        self.aug_rotate = aug_rotate
-        self.aug_flip = aug_flip
+        self.aug_rotate = mode == "train"
+        self.aug_flip = mode == "train"
         self.semantic_classes = semantic_classes
 
         ann_file = os.path.join(self.data_dir, "annotations", f"{self.mode}.json")
@@ -214,9 +212,9 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         path = coco.loadImgs(img_id)[0]["file_name"]
 
         # get random rotations and flip
-        _hor = np.random.randn() > 0.5
-        _ver = np.random.randn() > 0.5
-        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0])
+        _hor = self.aug_flip and np.random.rand() > 0.5
+        _ver = self.aug_flip and np.random.rand() > 0.5
+        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0]) if self.aug_rotate else 0.0
         record = self.prepare(
             img_id, path, target, horizontal=_hor, vertical=_ver, rotate=_rotate
         )
@@ -291,8 +289,12 @@ class ConvertToCocoDict:
             record["image"] = (1 / 255) * torch.as_tensor(
                 np.ascontiguousarray(np.expand_dims(img, 0))
             )
+            annos = [
+                dict(obj, segmentation=[resort_corners(np.asarray(obj["segmentation"][0]))])
+                for obj in target
+            ]
             record["instances"] = annotations_to_instances(
-                target, (h, w), mask_format="polygon"
+                annos, (h, w), mask_format="polygon"
             )
         else:
             aug_input = T.AugInput(img)
@@ -412,8 +414,6 @@ def build(mode, args):
         dataset_root,
         transforms=make_poly_transforms(mode),
         point_transforms=make_point_transforms(args.grid_sample_size),
-        aug_rotate=False,
-        aug_flip=False,
         semantic_classes=args.semantic_classes,
         mode=mode,
     )

@@ -12,3 +12,12 @@ RoomFormer/output*
 RoomFormer/wandb*
 
 slurm-*.out
+
+*/data_preprocess/scenecad/scans_transform*
+*/data_preprocess/scenecad/meta_data
+
+*.pdf
+*eval_paper_roomformer/*
+*train_dino_v1_roomformer/*
+*train_dino_v2_roomformer/*
+*train_vanilla_roomformer/*

@@ -7,12 +7,12 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn.init import constant_, normal_, uniform_, xavier_uniform_
+
+# from torch.nn.init import constant_, normal_, uniform_, xavier_uniform_
 from util.misc import NestedTensor
 
-from models.ops.modules import MSDeformAttn
-
-from .backbone import build_backbone as build_resnet_backbone
+# from models.ops.modules import MSDeformAttn
+# from .backbone import build_backbone as build_resnet_backbone
 from .deformable_transformer import (
     DeformableTransformer,
     DeformableTransformerDecoder,
@@ -21,6 +21,7 @@ from .deformable_transformer import (
     # DeformableTransformerEncoderLayer,
 )
 from .matcher import build_matcher
+from .position_encoding import build_position_encoding
 from .roomformer import MLP, SetCriterion, _get_clones
 
 sys.path.append("LitePT")
@@ -149,12 +150,12 @@ def build_feature_map_density(
         0, linear_idx, torch.ones(num_points, 1, device=device, dtype=feats.dtype)
     )
 
-    # mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
+    mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
     log_count = torch.log1p(count_buf)  # explicit density channel
 
-    # feat_map = torch.cat([feat_buf], dim=-1)
+    feat_map = torch.cat([mean_feat, log_count], dim=-1)
     feat_map = (
-        feat_buf.view(batch_size, grid_size, grid_size, -1)
+        feat_map.view(batch_size, grid_size, grid_size, -1)
         .permute(0, 3, 1, 2)
         .contiguous()
     )
@@ -208,45 +209,89 @@ class Dense2DBasicBlock(nn.Module):
 class LitePTBackbone(nn.Module):
     def __init__(
         self,
-        litept: nn.Module,
+        # litept: nn.Module,
+        # resnet_backbone: nn.Module,
         enc_out_channels,
         enc_mlp_ratio,
         out_channels=16,
         grid_size=256,
     ):
         super().__init__()
-        self.litept = litept
+        # self.litept = litept
 
         self.enc_out_channels = enc_out_channels
         self.grid_size = grid_size
         self.embed_dim = out_channels
         self.out_channels = out_channels
+        # self.resnet_backbone = resnet_backbone
+
+        self.num_feature_levels = num_feature_levels = 4
+        hidden_dim = 256
+
+        # if num_feature_levels > 1:
+        #     num_backbone_outs = len(resnet_backbone.strides)
+        #     input_proj_list = []
+        #     for _ in range(num_backbone_outs):
+        #         in_channels = resnet_backbone.num_channels[_]
+        #         input_proj_list.append(
+        #             nn.Sequential(
+        #                 nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         )
+        #     for _ in range(num_feature_levels - num_backbone_outs):
+        #         input_proj_list.append(
+        #             nn.Sequential(
+        #                 nn.Conv2d(
+        #                     in_channels, hidden_dim, kernel_size=3, stride=2, padding=1
+        #                 ),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         )
+        #         in_channels = hidden_dim
+        #     self.input_proj = nn.ModuleList(input_proj_list)
+        # else:
+        #     self.input_proj = nn.ModuleList(
+        #         [
+        #             nn.Sequential(
+        #                 nn.Conv2d(
+        #                     resnet_backbone.num_channels[0], hidden_dim, kernel_size=1
+        #                 ),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         ]
+        #     )
 
         channels = [64, 128, 256, 256, 256, 256]
 
+        height = width = self.grid_size // 2
         conv = [
             nn.Sequential(
                 nn.Conv2d(
-                    self.enc_out_channels,
+                    1,
                     64,
                     kernel_size=7,
                     stride=2,
                     padding=3,
                     bias=False,
                 ),
-                nn.GroupNorm(16, 64),
+                nn.GroupNorm(32, 64),
+                # nn.LayerNorm([64, height, width]),
                 # Dense2DBasicBlock(64),
                 # Dense2DBasicBlock(64),
                 nn.ReLU(),
             )
         ]
         for i in range(len(channels) - 1):
+            height = height // 2
+            width = width // 2
             conv.append(
                 nn.Sequential(
                     nn.Conv2d(
                         channels[i], channels[i + 1], 3, 2, padding=1, bias=False
                     ),
-                    nn.GroupNorm(16, channels[i + 1]),
+                    nn.GroupNorm(32, channels[i + 1]),
+                    # nn.LayerNorm([channels[i + 1], height, width]),
                     # nn.BatchNorm2d(channels[i+1], momentum=0.01, eps=1e-3),
                     nn.ReLU(),
                     Dense2DBasicBlock(channels[i + 1]),
@@ -256,28 +301,28 @@ class LitePTBackbone(nn.Module):
 
         self.conv = nn.ModuleList(conv)
 
-        # self.proj = nn.Conv2d(enc_out_channels + 1, 256, 1, 1)
-
         # Possibly freezing LitePT?
 
-    # TODO: 
+    # TODO:
     # - Difference between using full LitePT (encoder + decoder) vs encoder only
     # - Try incorporating S2C operation on voxelized feature cloud (https://xieenze.github.io/projects/m2bev/) - No source
     # - Compare S2C approach vs sum approach (ours)
     # - But for now lets try linear layer first
     def forward(self, x):
-        out = self.litept(x)
-        coords = out["coord"]
+        # out = self.litept(x)
+        # coords = out["coord"]
 
-        feat, density = build_feature_map_density(
-            coords=coords,
-            feats=out.feat,
-            batch_idxs=out.batch,
-            batch_size=int(out.batch.max().item() + 1),
-            grid_size=self.grid_size,
-            embed_dim=self.enc_out_channels,
-        )
-        # feat = torch.stack(x["image"]).to(torch.device("cuda"))
+        # feat, density = build_feature_map_density(
+        #     coords=coords,
+        #     feats=out.feat,
+        #     batch_idxs=out.batch,
+        #     batch_size=int(out.batch.max().item() + 1),
+        #     grid_size=self.grid_size,
+        #     embed_dim=self.enc_out_channels,
+        # )
+
+        feat = torch.stack(x["image"]).to(torch.device("cuda"))
+        density = []
 
         feats = []
         for i, layer in enumerate(self.conv):
@@ -294,7 +339,34 @@ class LitePTBackbone(nn.Module):
             else:
                 feat = conv_out
 
-        return feats, density
+        # b, _, h, w = feat.shape
+        # device = feat.device
+        # mask = torch.zeros((b, h, w), dtype=torch.bool, device=device)
+        # memory, pos = self.resnet_backbone(NestedTensor(feat, mask))
+        # feats = []
+        # masks = []
+        # for l, m in enumerate(memory):
+        #     feat, mask = m.decompose()
+        #     feats.append(self.input_proj[l](feat))
+        #     masks.append(mask)
+
+        # if self.num_feature_levels > len(memory):
+        #     _len_srcs = len(memory)
+        #     for l in range(_len_srcs, self.num_feature_levels):
+        #         if l == _len_srcs:
+        #             src = self.input_proj[l](memory[-1].tensors)
+        #         else:
+        #             src = self.input_proj[l](feats[-1])
+        #         m = mask
+        #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(
+        #             torch.bool
+        #         )[0]
+        #         pos_l = self.resnet_backbone[1](NestedTensor(src, mask)).to(src.dtype)
+        #         feats.append(src)
+        #         masks.append(mask)
+        #         pos.append(pos_l)
+
+        return feats, density  # masks, pos, density
 
 
 class DeformableTransformerWrapper(DeformableTransformer):
@@ -333,6 +405,7 @@ class DeformableTransformerWrapper(DeformableTransformer):
         )
 
         self.proj = nn.Linear(d_model * 2, d_model)
+        # self.proj = nn.Conv2d(d_model * 2, d_model, 3, padding=1, bias=False)
 
     def forward(
         self,
@@ -393,9 +466,12 @@ class DeformableTransformerWrapper(DeformableTransformer):
         bs, _, _ = litept_src_flatten.shape
 
         # TODO: Add some (learnable) linear layer to join the memory from resnet and litept
-        shared_memory = torch.concat([litept_src_flatten, _resnet_memory], axis=2).reshape((-1, self.d_model * 2))
+        # Channel-wise concatenate
+        shared_memory = torch.concat(
+            [litept_src_flatten, _resnet_memory], axis=2
+        ).reshape((-1, self.d_model * 2))
         shared_memory = self.proj(shared_memory).reshape((bs, -1, self.d_model))
-        
+
         # Uncomment to replicate RoomFormer
         # shared_memory = _resnet_memory
 
@@ -524,7 +600,8 @@ class LitePTDeformableTransformer(nn.Module):
     def __init__(
         self,
         litept_backbone: nn.Module,
-        resnet_backbone: nn.Module,
+        position_embedding: nn.Module,
+        # resnet_backbone: nn.Module,
         transformer: nn.Module,
         num_classes: int,
         num_queries: int,
@@ -537,7 +614,7 @@ class LitePTDeformableTransformer(nn.Module):
     ):
         super().__init__()
         self.litept_backbone = litept_backbone
-        self.resnet_backbone = resnet_backbone
+        # self.resnet_backbone = resnet_backbone
         self.transformer = transformer
         self.num_queries = num_queries
         self.num_polys = num_polys
@@ -549,32 +626,44 @@ class LitePTDeformableTransformer(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.coords_embed = MLP(hidden_dim, hidden_dim, 2, 3)
         self.num_feature_levels = num_feature_levels
+        self.position_embedding = position_embedding
 
         self.query_embed = nn.Embedding(num_queries, 2)
         self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
 
-        if num_feature_levels > 1:
-            num_backbone_outs = len(resnet_backbone.strides)
-            input_proj_list = []
-            for _ in range(num_backbone_outs):
-                in_channels = resnet_backbone.num_channels[_]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-            for _ in range(num_feature_levels - num_backbone_outs):
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
-                    nn.GroupNorm(32, hidden_dim),
-                ))
-                in_channels = hidden_dim
-            self.input_proj = nn.ModuleList(input_proj_list)
-        else:
-            self.input_proj = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(resnet_backbone.num_channels[0], hidden_dim, kernel_size=1),
-                    nn.GroupNorm(32, hidden_dim),
-                )])
+        # if num_feature_levels > 1:
+        #     num_backbone_outs = len(resnet_backbone.strides)
+        #     input_proj_list = []
+        #     for _ in range(num_backbone_outs):
+        #         in_channels = resnet_backbone.num_channels[_]
+        #         input_proj_list.append(
+        #             nn.Sequential(
+        #                 nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         )
+        #     for _ in range(num_feature_levels - num_backbone_outs):
+        #         input_proj_list.append(
+        #             nn.Sequential(
+        #                 nn.Conv2d(
+        #                     in_channels, hidden_dim, kernel_size=3, stride=2, padding=1
+        #                 ),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         )
+        #         in_channels = hidden_dim
+        #     self.input_proj = nn.ModuleList(input_proj_list)
+        # else:
+        #     self.input_proj = nn.ModuleList(
+        #         [
+        #             nn.Sequential(
+        #                 nn.Conv2d(
+        #                     resnet_backbone.num_channels[0], hidden_dim, kernel_size=1
+        #                 ),
+        #                 nn.GroupNorm(32, hidden_dim),
+        #             )
+        #         ]
+        #     )
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -622,11 +711,11 @@ class LitePTDeformableTransformer(nn.Module):
         - offset: mark end of each point cloud in batch
         - feat: [rgb, normal] stacked rgb + normal values for each point
         """
-        litept_feats, density = self.litept_backbone(samples)
+        litept_feats, _ = self.litept_backbone(samples)
         bs = litept_feats[0].shape[0]
         device = litept_feats[0].device
 
-        # density = torch.stack(samples['image']).to(device)
+        # density = torch.stack(samples["image"]).to(device)
 
         tgt = self.tgt_embed.weight
         query_embed = self.query_embed.weight
@@ -641,8 +730,8 @@ class LitePTDeformableTransformer(nn.Module):
             device=device,
         )
 
-        nested_density = NestedTensor(density, _mask)
-        resnet_srcs, pos = self.resnet_backbone(nested_density)
+        # nested_density = NestedTensor(density, _mask)
+        # resnet_srcs, pos = self.resnet_backbone(nested_density)
         # Probably use these position embedding + mask for both
 
         # mask = torch.zeros(
@@ -652,46 +741,54 @@ class LitePTDeformableTransformer(nn.Module):
         #     dtype=torch.bool,
         #     device=device
         # )
-        # pos = self.position_embedding(mask)
+        # pos = self.position_embedding(_mask)
+        pos = []
 
         # TODO: Currently this is just a placeholder.
         # Maybe add some convolution to replace feat interpolation?
         masks = []
-        resnet_feats = []
-        # for ifeat in litept_feats:
-        #     # ifeat = F.interpolate(feat, size=size, mode="bilinear")
-        #     size = ifeat.shape[-2:]
-        #     imask = (
-        #         F.interpolate(mask[None].float(), size=size, mode="nearest")
-        #         .squeeze(1)
-        #         .bool()
-        #     )[0]
+        # resnet_feats = []
+        for ifeat in litept_feats:
+            # ifeat = F.interpolate(feat, size=size, mode="bilinear")
+            size = ifeat.shape[-2:]
+            imask = (
+                F.interpolate(_mask[None].float(), size=size, mode="nearest")
+                .bool()
+            )[0]
 
-        #     # litept_feats.append(ifeat)
-        #     masks.append(imask)
+            # Adapt cases where batch=1
+            if imask.shape[0] != 1:
+                imask = imask.squeeze(1)
+            ipos = self.position_embedding(NestedTensor(ifeat, imask))
 
-        for l, feat in enumerate(resnet_srcs):
-            src, mask = feat.decompose()
-            resnet_feats.append(self.input_proj[l](src))
-            masks.append(mask)
-            assert mask is not None
-        if self.num_feature_levels > len(resnet_feats):
-            _len_srcs = len(resnet_feats)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](resnet_srcs[-1].tensors)
-                else:
-                    src = self.input_proj[l](resnet_feats[-1])
-                m = _mask
-                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.resnet_backbone[1](NestedTensor(src, mask)).to(src.dtype)
-                resnet_feats.append(src)
-                masks.append(mask)
-                pos.append(pos_l)
+            # litept_feats.append(ifeat)
+            masks.append(imask)
+            pos.append(ipos)
+
+        # for l, feat in enumerate(resnet_srcs):
+        #     src, mask = feat.decompose()
+        #     resnet_feats.append(self.input_proj[l](src))
+        #     masks.append(mask)
+        #     assert mask is not None
+        # if self.num_feature_levels > len(resnet_feats):
+        #     _len_srcs = len(resnet_feats)
+        #     for l in range(_len_srcs, self.num_feature_levels):
+        #         if l == _len_srcs:
+        #             src = self.input_proj[l](resnet_srcs[-1].tensors)
+        #         else:
+        #             src = self.input_proj[l](resnet_feats[-1])
+        #         m = _mask
+        #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(
+        #             torch.bool
+        #         )[0]
+        #         pos_l = self.resnet_backbone[1](NestedTensor(src, mask)).to(src.dtype)
+        #         resnet_feats.append(src)
+        #         masks.append(mask)
+        #         pos.append(pos_l)
 
         hs, _init_reference, inter_references, inter_classes = self.transformer(
             litept_feats,
-            resnet_feats,
+            # resnet_feats,
             masks,
             pos,
             query_embed,
@@ -783,16 +880,18 @@ def build_litept(args):
 
 
 def build(args, train=True):
-    litept = build_litept(args)
+    # litept = build_litept(args)
 
     litept_out_channels = (
         72 if not args.litept_enc_mode else args.litept_enc_channels[-1]
     )
 
-    resnet_backbone = build_resnet_backbone(args)
+    # resnet_backbone = build_resnet_backbone(args)
+    position_embedding = build_position_encoding(args)
 
     litept_backbone = LitePTBackbone(
-        litept=litept,
+        # litept=litept,
+        # resnet_backbone=resnet_backbone,
         enc_out_channels=litept_out_channels,
         enc_mlp_ratio=args.litept_mlp_ratio,
         out_channels=args.litept_mlp_out_channels,
@@ -814,7 +913,7 @@ def build(args, train=True):
     #     query_pos_type=args.query_pos_type,
     # )
 
-    transformer = DeformableTransformerWrapper(
+    transformer = DeformableTransformer(
         d_model=args.hidden_dim,
         nhead=args.nheads,
         num_encoder_layers=args.enc_layers,
@@ -834,7 +933,8 @@ def build(args, train=True):
     num_classes = 1
     model = LitePTDeformableTransformer(
         litept_backbone,
-        resnet_backbone,
+        position_embedding,
+        # resnet_backbone,
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
