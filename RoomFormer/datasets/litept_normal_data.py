@@ -214,7 +214,7 @@ class PointCloudNormalDataset(torch.utils.data.Dataset):
         # get random rotations and flip
         _hor = self.aug_flip and np.random.rand() > 0.5
         _ver = self.aug_flip and np.random.rand() > 0.5
-        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0]) if self.aug_flip else 0.0
+        _rotate = np.random.choice([0.0, 90.0, 180.0, 270.0]) if self.aug_rotate else 0.0
         record = self.prepare(
             img_id, path, target, horizontal=_hor, vertical=_ver, rotate=_rotate
         )
@@ -289,8 +289,12 @@ class ConvertToCocoDict:
             record["image"] = (1 / 255) * torch.as_tensor(
                 np.ascontiguousarray(np.expand_dims(img, 0))
             )
+            annos = [
+                dict(obj, segmentation=[resort_corners(np.asarray(obj["segmentation"][0]))])
+                for obj in target
+            ]
             record["instances"] = annotations_to_instances(
-                target, (h, w), mask_format="polygon"
+                annos, (h, w), mask_format="polygon"
             )
         else:
             aug_input = T.AugInput(img)
