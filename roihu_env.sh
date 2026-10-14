@@ -2,7 +2,7 @@
 #SBATCH --job-name=rnvironment-setup
 #SBATCH --account=project_2021276
 #SBATCH --partition=gpumedium
-#SBATCH --time=00:30:00
+#SBATCH --time=01:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1 --cpus-per-task=72  # The product should be 72 if requesting 1 GPU per node
 #SBATCH --mem-per-cpu=5000M
@@ -16,4 +16,5 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export OMP_PLACES=cores
 export OMP_PROC_BIND=spread
 
-bash tykky_start.sh project_2021276
+# bash tykky_start.sh project_2021276
+bash build_container.sh
