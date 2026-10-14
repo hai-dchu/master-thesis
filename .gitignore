@@ -11,3 +11,6 @@ RoomFormer/output*
 RoomFormer/wandb*
 
 slurm-*.out
+
+*/data_preprocess/scenecad/scans_transform*
+*/data_preprocess/scenecad/meta_data
