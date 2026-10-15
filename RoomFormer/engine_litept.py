@@ -51,7 +51,7 @@ def train_one_epoch(
 
     for batched_inputs in metric_logger.log_every(data_loader, print_freq, header):
         # No need sample
-        for key in ["image"]: # ["coord", "grid_coord", "grid_size", "offset", "feat"]:
+        for key in ["coord", "grid_coord", "grid_size", "offset", "feat"]:
             if isinstance(batched_inputs[key], torch.Tensor):
                 batched_inputs[key] = batched_inputs[key].to(device)
 
@@ -111,7 +111,7 @@ def evaluate(model, criterion, dataset_name, data_loader, device):
     header = "Test:"
 
     for batched_inputs in metric_logger.log_every(data_loader, 10, header):
-        for key in ["image"]: # ["coord", "grid_coord", "grid_size", "offset", "feat"]:
+        for key in ["coord", "grid_coord", "grid_size", "offset", "feat"]:
             if isinstance(batched_inputs[key], torch.Tensor):
                 batched_inputs[key] = batched_inputs[key].to(device)
         scene_ids = [x for x in batched_inputs["image_id"]]
@@ -266,7 +266,7 @@ def evaluate_floor(
         os.mkdir(output_dir)
 
     for batched_inputs in data_loader:
-        for key in ["image"]: # ["coord", "grid_coord", "grid_size", "offset", "feat"]:
+        for key in ["coord", "grid_coord", "grid_size", "offset", "feat"]:
             if isinstance(batched_inputs[key], torch.Tensor):
                 batched_inputs[key] = batched_inputs[key].to(device)
         samples = [x for x in batched_inputs["image"]]
