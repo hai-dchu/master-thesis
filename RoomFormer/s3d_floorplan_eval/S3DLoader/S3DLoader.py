@@ -27,7 +27,7 @@ class S3DLoader(object):
             self.batch_size = 1
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print('Selected device is:', device)
+        # print('Selected device is:', device)
         self.device = device
 
         if mode == 'train':
@@ -134,7 +134,7 @@ class S3DLoader(object):
 
 class S3DDataset(Dataset):
     def __init__(self, options, scenes_path, score_gen, num_scenes, generate_input_candidates, mode):
-        print("Creating Structured3D Dataset with %d scenes..." % num_scenes)
+        # print("Creating Structured3D Dataset with %d scenes..." % num_scenes)
         self.options = options
         self.score_gen = None
 
