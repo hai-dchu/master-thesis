@@ -492,8 +492,7 @@ def main(args):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if match_name_keywords(n, ["sampling_offsets"])
-                and p.requires_grad
+                if match_name_keywords(n, ["sampling_offsets"]) and p.requires_grad
             ],
             "lr": args.lr * args.lr_litept_mlp_mult,
         },
@@ -527,6 +526,51 @@ def main(args):
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"number of params: {n_parameters}")
+
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            checkpoint["model"], strict=False
+        )
+        unexpected_keys = [
+            k
+            for k in unexpected_keys
+            if not (k.endswith(("total_params", "total_ops")))
+        ]
+        if len(missing_keys) > 0:
+            print(f"Missing Keys: {missing_keys}")
+        if len(unexpected_keys) > 0:
+            print(f"Unexpected Keys: {unexpected_keys}")
+        if (
+            "optimizer" in checkpoint
+            and "lr_scheduler" in checkpoint
+            and "epoch" in checkpoint
+        ):
+            import copy
+
+            p_groups = copy.deepcopy(optimizer.param_groups)
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            for pg, pg_old in zip(optimizer.param_groups, p_groups):
+                pg["lr"] = pg_old["lr"]
+                pg["initial_lr"] = pg_old["initial_lr"]
+            print(optimizer.param_groups)
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler (e.g., decrease lr in advance).
+            args.override_resumed_lr_drop = False
+            if args.override_resumed_lr_drop:
+                print(
+                    "Warning: (hack) args.override_resumed_lr_drop is set to True, so args.lr_drop would override lr_drop in resumed lr_scheduler."
+                )
+                lr_scheduler.step_size = args.lr_drop
+                lr_scheduler.base_lrs = [
+                    group["initial_lr"] for group in optimizer.param_groups
+                ]
+            lr_scheduler.step(lr_scheduler.last_epoch)
+            args.start_epoch = checkpoint["epoch"] + 1
+        # check the resumed model
+        test_stats = evaluate(
+            model, criterion, args.dataset_name, data_loader_val, device
+        )
 
     print("Start training")
     start_time = time.time()
