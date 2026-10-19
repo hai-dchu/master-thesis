@@ -26,7 +26,7 @@ echo "[TASK] PyTorch (cu130)"
 pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu130
 
 # General requirements
-pip install -r /workspace/requirements.txt
+pip install -r /workspace/requirements.lock.txt
 
 echo "[TASK] cumm + spconv from source (no aarch64/cu130 wheels exist)"
 # rathaROG forks carry the CUDA 13 patches; upstream cumm/spconv do not build against CUDA 13.
