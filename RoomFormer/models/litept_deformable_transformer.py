@@ -153,7 +153,7 @@ def build_feature_map_density(
     mean_feat = feat_buf / count_buf.clamp_min(1.0)  # avg
     log_count = torch.log1p(count_buf)  # explicit density channel
 
-    feat_map = torch.cat([mean_feat, log_count], dim=-1)
+    feat_map = mean_feat  # torch.cat([mean_feat, log_count], dim=-1)
     feat_map = (
         feat_map.view(batch_size, grid_size, grid_size, -1)
         .permute(0, 3, 1, 2)
@@ -268,7 +268,7 @@ class LitePTBackbone(nn.Module):
         conv = [
             nn.Sequential(
                 nn.Conv2d(
-                    enc_out_channels + 1,
+                    enc_out_channels, # + 1,
                     64,
                     kernel_size=7,
                     stride=2,
